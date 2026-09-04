@@ -268,6 +268,9 @@ pub struct ModelPreset {
     /// Input modalities accepted when composing user turns for this preset.
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
+    /// Maximum context window advertised by the model metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_window: Option<i64>,
 }
 
 /// Visibility of a model in the picker or APIs.
@@ -882,6 +885,7 @@ impl From<ModelInfo> for ModelPreset {
             availability_nux: info.availability_nux,
             supported_in_api: info.supported_in_api,
             input_modalities: info.input_modalities,
+            max_context_window: info.max_context_window,
         }
     }
 }
@@ -1993,7 +1997,7 @@ mod tests {
     }
 
     #[test]
-    fn model_preset_preserves_availability_nux() {
+    fn model_preset_preserves_display_metadata() {
         let preset = ModelPreset::from(ModelInfo {
             availability_nux: Some(ModelAvailabilityNux {
                 message: "Try Spark.".to_string(),
@@ -2001,6 +2005,7 @@ mod tests {
             additional_speed_tiers: vec![SPEED_TIER_FAST.to_string()],
             default_service_tier: Some(ServiceTier::Fast.request_value().to_string()),
             service_tiers: Vec::new(),
+            max_context_window: Some(1_000_000),
             ..test_model(/*spec*/ None)
         });
 
@@ -2012,8 +2017,11 @@ mod tests {
         );
         assert!(preset.supports_fast_mode());
         assert_eq!(
-            preset.default_service_tier,
-            Some(ServiceTier::Fast.request_value().to_string())
+            (preset.default_service_tier, preset.max_context_window,),
+            (
+                Some(ServiceTier::Fast.request_value().to_string()),
+                Some(1_000_000),
+            )
         );
     }
 

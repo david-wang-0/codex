@@ -56,6 +56,9 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+use super::claude_status_line::ClaudeStatusLineParts;
+use super::claude_status_line::split_claude_status_line;
+
 /// The rendering inputs for the footer area under the composer.
 ///
 /// Callers are expected to construct `FooterProps` from higher-level state (`ChatComposer`,
@@ -796,7 +799,11 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
     }
 
     let mut line = if props.status_line_enabled {
-        props.status_line_value.clone()
+        props.status_line_value.as_ref().map(|line| {
+            split_claude_status_line(line)
+                .map(|parts| parts.left)
+                .unwrap_or_else(|| line.clone())
+        })
     } else {
         None
     };
@@ -818,6 +825,18 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
     }
 
     line
+}
+
+pub(crate) fn passive_footer_status_line_right(
+    props: &FooterProps,
+) -> Option<ClaudeStatusLineParts> {
+    if !shows_passive_footer_line(props) || !props.status_line_enabled {
+        return None;
+    }
+    props
+        .status_line_value
+        .as_ref()
+        .and_then(split_claude_status_line)
 }
 
 /// Whether the current footer mode allows contextual information to replace instructional hints.
@@ -1368,6 +1387,9 @@ mod tests {
                 } else {
                     None
                 };
+                let split_status_line = status_line_active
+                    .then(|| passive_footer_status_line_right(props))
+                    .flatten();
                 let left_mode_indicator = if status_line_active {
                     None
                 } else {
@@ -1400,18 +1422,28 @@ mod tests {
                     )
                 };
                 let right_line = if status_line_active {
-                    let full = status_line_right_indicator_line(
-                        collaboration_mode_indicator,
-                        /*goal_status_indicator*/ None,
-                        ide_context_active,
-                        show_cycle_hint,
-                    );
-                    let compact = status_line_right_indicator_line(
-                        collaboration_mode_indicator,
-                        /*goal_status_indicator*/ None,
-                        ide_context_active,
-                        /*show_cycle_hint*/ false,
-                    );
+                    let full = split_status_line
+                        .as_ref()
+                        .map(|parts| parts.right.clone())
+                        .or_else(|| {
+                            status_line_right_indicator_line(
+                                collaboration_mode_indicator,
+                                /*goal_status_indicator*/ None,
+                                ide_context_active,
+                                show_cycle_hint,
+                            )
+                        });
+                    let compact = split_status_line
+                        .as_ref()
+                        .map(|parts| parts.compact_right.clone())
+                        .or_else(|| {
+                            status_line_right_indicator_line(
+                                collaboration_mode_indicator,
+                                /*goal_status_indicator*/ None,
+                                ide_context_active,
+                                /*show_cycle_hint*/ false,
+                            )
+                        });
                     let full_width = full.as_ref().map(|line| line.width() as u16).unwrap_or(0);
                     if can_show_left_with_context(area, left_width, full_width) {
                         full
@@ -2064,6 +2096,61 @@ mod tests {
         assert!(
             screen.contains('…'),
             "status line should be truncated with ellipsis to keep mode indicator"
+        );
+    }
+
+    #[test]
+    fn claude_status_line_is_two_sided_and_drops_resets_when_narrow() {
+        use crate::bottom_pane::ClaudeLimit;
+        use crate::bottom_pane::ClaudeStatusLineData;
+        use crate::bottom_pane::claude_status_line;
+
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            queue_submissions: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            status_line_value: Some(claude_status_line(ClaudeStatusLineData {
+                thread_title: Some("status line".to_string()),
+                current_dir: "./work/codex".to_string(),
+                git_branch: Some("main".to_string()),
+                model: "gpt-5.6-sol".to_string(),
+                max_context_window: Some(1_000_000),
+                context_window: Some(258_000),
+                reasoning: "max".to_string(),
+                context_used_tokens: Some(134_000),
+                five_hour: Some(ClaudeLimit {
+                    label: "5h",
+                    used_percent: 49,
+                    resets_at: Some(10_800),
+                }),
+                weekly: Some(ClaudeLimit {
+                    label: "7d",
+                    used_percent: 85,
+                    resets_at: Some(180_000),
+                }),
+                now_epoch_seconds: 0,
+            })),
+            status_line_enabled: true,
+            key_hints: FooterKeyHints::default_bindings(),
+            active_agent_label: None,
+        };
+
+        snapshot_footer_with_mode_indicator(
+            "footer_claude_status_line_wide",
+            /*width*/ 150,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+        );
+        snapshot_footer_with_mode_indicator(
+            "footer_claude_status_line_narrow",
+            /*width*/ 85,
+            &props,
+            /*collaboration_mode_indicator*/ None,
         );
     }
 

@@ -4,6 +4,9 @@
 //! behavior easier to review without paging through the rest of `chatwidget.rs`.
 
 use super::*;
+use crate::bottom_pane::ClaudeLimit;
+use crate::bottom_pane::ClaudeStatusLineData;
+use crate::bottom_pane::claude_status_line;
 use crate::bottom_pane::status_line_from_segments;
 use crate::branch_summary;
 use crate::chatwidget::limit_label_for_window;
@@ -21,6 +24,18 @@ use codex_protocol::models::PermissionProfile;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 
 use super::status_state::TerminalTitleStatusKind;
+
+const CLAUDE_STATUS_LINE_ITEMS: [StatusLineItem; 9] = [
+    StatusLineItem::ThreadTitle,
+    StatusLineItem::CurrentDir,
+    StatusLineItem::GitBranch,
+    StatusLineItem::ModelWithReasoning,
+    StatusLineItem::ContextUsed,
+    StatusLineItem::ContextWindowSize,
+    StatusLineItem::UsedTokens,
+    StatusLineItem::FiveHourLimit,
+    StatusLineItem::WeeklyLimit,
+];
 
 /// Items shown in the terminal title when the user has not configured a
 /// custom selection. Intentionally minimal: activity indicator + project name.
@@ -206,6 +221,13 @@ impl ChatWidget {
             return;
         }
 
+        if selections.status_line_items.as_slice() == CLAUDE_STATUS_LINE_ITEMS {
+            let line = self.claude_status_line();
+            self.set_status_line(Some(line));
+            self.set_status_line_hyperlink(/*url*/ None);
+            return;
+        }
+
         let mut segments = Vec::new();
         for item in &selections.status_line_items {
             if let Some(value) = self.status_line_value_for_item(*item) {
@@ -223,6 +245,59 @@ impl ChatWidget {
             .then(|| self.status_line_pull_request_url())
             .flatten();
         self.set_status_line_hyperlink(hyperlink_url);
+    }
+
+    pub(super) fn claude_status_line(&mut self) -> Line<'static> {
+        let context_window = self.status_line_context_window_size();
+        let max_context_window = self
+            .model_catalog
+            .try_list_models()
+            .ok()
+            .and_then(|models| {
+                models
+                    .into_iter()
+                    .find(|preset| preset.model == self.current_model())
+            })
+            .and_then(|preset| preset.max_context_window);
+        let context_used_tokens = (!self.token_usage_pending).then(|| {
+            self.token_info
+                .as_ref()
+                .map(|info| info.last_token_usage.tokens_in_context_window())
+                .unwrap_or(0)
+        });
+        let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex");
+        let five_hour = snapshot
+            .and_then(five_hour_status_window)
+            .map(|(window, _)| ClaudeLimit {
+                label: "5h",
+                used_percent: window.used_percent.round().clamp(0.0, 100.0) as i64,
+                resets_at: window.resets_at_epoch,
+            });
+        let weekly = snapshot
+            .and_then(weekly_status_window)
+            .map(|(window, _)| ClaudeLimit {
+                label: "7d",
+                used_percent: window.used_percent.round().clamp(0.0, 100.0) as i64,
+                resets_at: window.resets_at_epoch,
+            });
+        let now_epoch_seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or_default();
+
+        claude_status_line(ClaudeStatusLineData {
+            thread_title: self.status_line_value_for_item(StatusLineItem::ThreadTitle),
+            current_dir: format_directory_display(self.status_line_cwd(), /*max_width*/ None),
+            git_branch: self.status_line_branch.clone(),
+            model: self.model_display_name().to_string(),
+            max_context_window,
+            context_window,
+            reasoning: self.reasoning_display_name(),
+            context_used_tokens,
+            five_hour,
+            weekly,
+            now_epoch_seconds,
+        })
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.

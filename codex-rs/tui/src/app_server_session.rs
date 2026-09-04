@@ -1692,6 +1692,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
         // `model/list` already returns models filtered for the active client/auth context.
         supported_in_api: true,
         input_modalities: model.input_modalities,
+        max_context_window: model.max_context_window,
     }
 }
 
@@ -2425,6 +2426,7 @@ mod tests {
             supported_reasoning_efforts: Vec::new(),
             default_reasoning_effort: ReasoningEffort::Medium,
             input_modalities: Vec::new(),
+            max_context_window: None,
             supports_personality: false,
             multi_agent_version: None,
             additional_speed_tiers: Vec::new(),

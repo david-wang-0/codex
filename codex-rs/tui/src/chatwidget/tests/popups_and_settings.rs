@@ -3561,6 +3561,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
         availability_nux: None,
         supported_in_api: true,
         input_modalities: default_input_modalities(),
+        max_context_window: None,
     };
 
     chat.open_model_popup_with_presets(vec![
@@ -4059,6 +4060,7 @@ async fn single_reasoning_option_skips_selection() {
         availability_nux: None,
         supported_in_api: true,
         input_modalities: default_input_modalities(),
+        max_context_window: None,
     };
     chat.open_reasoning_popup(preset);
 

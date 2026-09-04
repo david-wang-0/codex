@@ -220,6 +220,41 @@ async fn token_usage_update_uses_runtime_context_window() {
 }
 
 #[tokio::test]
+async fn claude_status_line_separates_model_max_from_effective_context_window() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let current_model = chat.current_model().to_string();
+    let mut models = chat.model_catalog.try_list_models().unwrap();
+    models
+        .iter_mut()
+        .find(|preset| preset.model == current_model)
+        .expect("current model preset")
+        .max_context_window = Some(1_000_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(models));
+    handle_token_count(
+        &mut chat,
+        Some(make_token_info(
+            /*total_tokens*/ 134_000, /*context_window*/ 258_000,
+        )),
+    );
+
+    let rendered = chat
+        .claude_status_line()
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(
+        rendered.contains("[1M,"),
+        "expected model maximum: {rendered}"
+    );
+    assert!(
+        rendered.contains("ctx 134/258k (51%)"),
+        "expected effective session context: {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn status_line_git_summary_items_render_values() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_git_summary = Some(StatusLineGitSummary {

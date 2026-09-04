@@ -259,6 +259,7 @@ use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
 use super::footer::max_left_width_for_right;
 use super::footer::passive_footer_status_line;
+use super::footer::passive_footer_status_line_right;
 use super::footer::render_context_right;
 use super::footer::render_footer_from_props;
 use super::footer::render_footer_hint_items;
@@ -4734,6 +4735,9 @@ impl ChatComposer {
                     } else {
                         None
                     };
+                    let split_status_line = status_line_active
+                        .then(|| passive_footer_status_line_right(&footer_props))
+                        .flatten();
                     let transition_visible = status_line_active
                         && !self.footer.flash_visible()
                         && self.footer.hint_override.is_none();
@@ -4796,8 +4800,16 @@ impl ChatComposer {
                         } else if transition_active {
                             None
                         } else if status_line_active {
-                            let full = self.mode_indicator_line(show_cycle_hint);
-                            let compact = self.mode_indicator_line(/*show_cycle_hint*/ false);
+                            let full = split_status_line
+                                .as_ref()
+                                .map(|parts| parts.right.clone())
+                                .or_else(|| self.mode_indicator_line(show_cycle_hint));
+                            let compact = split_status_line
+                                .as_ref()
+                                .map(|parts| parts.compact_right.clone())
+                                .or_else(|| {
+                                    self.mode_indicator_line(/*show_cycle_hint*/ false)
+                                });
                             let full_width = full.as_ref().map(|l| l.width() as u16).unwrap_or(0);
                             if can_show_left_with_context(hint_rect, left_width, full_width) {
                                 full
@@ -6048,6 +6060,43 @@ mod tests {
                 );
                 composer.set_task_running(/*running*/ true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
+            },
+        );
+    }
+
+    #[test]
+    fn claude_status_line_uses_composer_rect_for_right_alignment() {
+        use crate::bottom_pane::ClaudeLimit;
+        use crate::bottom_pane::ClaudeStatusLineData;
+        use crate::bottom_pane::claude_status_line;
+
+        snapshot_composer_state_with_width(
+            "composer_claude_status_line_right_aligned",
+            /*width*/ 150,
+            /*enhanced_keys_supported*/ true,
+            |composer| {
+                composer.set_status_line_enabled(/*enabled*/ true);
+                composer.set_status_line(Some(claude_status_line(ClaudeStatusLineData {
+                    thread_title: Some("status line".to_string()),
+                    current_dir: "./work/codex".to_string(),
+                    git_branch: Some("main".to_string()),
+                    model: "gpt-5.6-sol".to_string(),
+                    max_context_window: Some(1_000_000),
+                    context_window: Some(258_000),
+                    reasoning: "max".to_string(),
+                    context_used_tokens: Some(134_000),
+                    five_hour: Some(ClaudeLimit {
+                        label: "5h",
+                        used_percent: 49,
+                        resets_at: Some(10_800),
+                    }),
+                    weekly: Some(ClaudeLimit {
+                        label: "7d",
+                        used_percent: 85,
+                        resets_at: Some(180_000),
+                    }),
+                    now_epoch_seconds: 0,
+                })));
             },
         );
     }

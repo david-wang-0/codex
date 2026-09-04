@@ -60,6 +60,7 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
             .collect(),
         default_reasoning_effort: preset.default_reasoning_effort.clone(),
         input_modalities: preset.input_modalities.clone(),
+        max_context_window: preset.max_context_window,
         // `write_models_cache()` round-trips through a simplified ModelInfo fixture that does not
         // preserve personality placeholders in base instructions, so app-server list results from
         // cache report `supports_personality = false`.

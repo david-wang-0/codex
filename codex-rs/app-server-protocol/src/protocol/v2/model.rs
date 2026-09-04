@@ -104,6 +104,10 @@ pub struct Model {
     pub default_reasoning_effort: ReasoningEffort,
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
+    /// Maximum context window advertised by the model metadata.
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_context_window: Option<i64>,
     #[serde(default)]
     pub supports_personality: bool,
     /// Multi-agent runtime declared by this model, when available.

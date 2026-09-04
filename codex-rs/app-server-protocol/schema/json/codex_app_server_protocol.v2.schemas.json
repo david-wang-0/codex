@@ -11013,6 +11013,15 @@
         "isDefault": {
           "type": "boolean"
         },
+        "maxContextWindow": {
+          "default": null,
+          "description": "Maximum context window advertised by the model metadata.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "model": {
           "type": "string"
         },
