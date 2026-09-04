@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_channel::Receiver;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::HookEventName;
@@ -18,6 +19,9 @@ use codex_protocol::protocol::HookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookSource;
 use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_PARENT_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -34,6 +38,7 @@ use super::ConfiguredHandler;
 use super::MAX_CONCURRENT_ASYNC_HOOKS;
 use super::build_command;
 use super::run_command;
+use crate::HookSessionIdentity;
 use crate::events::user_prompt_submit::UserPromptSubmitRequest;
 
 #[cfg(windows)]
@@ -84,7 +89,7 @@ async fn cmd_shell_runs_quoted_hook_command_path() {
         let runtime = CommandHookRuntime::new(
             shell,
             Arc::new(std::env::vars_os().collect()),
-            ThreadId::new(),
+            HookSessionIdentity::root(ThreadId::new()),
             result_sender,
         );
         let result = run_command(&runtime, &handler, &command, &env, "{}", temp.path()).await;
@@ -210,6 +215,7 @@ fn build_command_replays_snapshot_before_hook_overrides_and_scrubbing() {
         "echo hook-ran",
         &environment,
         &env,
+        /*reserved_environment*/ &[],
     );
 
     assert_eq!(
@@ -235,6 +241,197 @@ fn build_command_replays_snapshot_before_hook_overrides_and_scrubbing() {
     );
 }
 
+#[tokio::test]
+async fn command_hook_receives_reserved_thread_identity_over_ambient_and_handler_env() {
+    let temp = tempdir().expect("create temp dir");
+    let source_path = AbsolutePathBuf::try_from(temp.path().join("hooks.json"))
+        .expect("absolute hook configuration path");
+    let command = if cfg!(windows) { "set" } else { "env" };
+    let identity = child_identity();
+    // Ambient values captured in the session snapshot must not leak through.
+    let mut environment = std::env::vars_os().collect::<Vec<_>>();
+    environment.extend(spoofed_identity_env());
+    // Handler-configured env is applied after the snapshot and must not win either.
+    let env = spoofed_identity_env()
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                name.into_string().expect("ascii name"),
+                value.into_string().expect("ascii value"),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let handler = ConfiguredHandler {
+        builtin: false,
+        event_name: HookEventName::SessionStart,
+        matcher: None,
+        timeout_sec: 10,
+        status_message: None,
+        additional_context_limit: Default::default(),
+        source_path: source_path.into(),
+        source: HookSource::User,
+        display_order: 0,
+        kind: ConfiguredHandlerKind::Command {
+            command: command.to_string(),
+            r#async: false,
+            env: env.clone(),
+        },
+    };
+    let (runtime, _result_receiver) =
+        runtime_with_environment_and_identity(Arc::new(environment), identity.clone());
+
+    let result = run_command(&runtime, &handler, command, &env, "{}", temp.path()).await;
+
+    assert_eq!(result.exit_code, Some(0), "stderr: {}", result.stderr);
+    assert_eq!(result.error, None);
+    let exported = |name: &str| {
+        result.stdout.lines().find_map(|line| {
+            line.split_once('=')
+                .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.to_string())
+        })
+    };
+    assert_eq!(
+        exported(CODEX_THREAD_ID_ENV_VAR),
+        Some(identity.thread_id.to_string())
+    );
+    assert_eq!(
+        exported(CODEX_PARENT_THREAD_ID_ENV_VAR),
+        identity.parent_thread_id.map(|id| id.to_string())
+    );
+    assert_eq!(
+        exported(CODEX_SESSION_ID_ENV_VAR),
+        Some(identity.session_id.to_string())
+    );
+}
+
+#[test]
+fn build_command_applies_reserved_identity_after_snapshot_and_handler_env() {
+    let identity = child_identity();
+    let environment = spoofed_identity_env();
+    let env = HashMap::from([
+        (CODEX_THREAD_ID_ENV_VAR.to_string(), "handler".to_string()),
+        (
+            CODEX_PARENT_THREAD_ID_ENV_VAR.to_string(),
+            "handler".to_string(),
+        ),
+        (CODEX_SESSION_ID_ENV_VAR.to_string(), "handler".to_string()),
+        ("CODEX_HOOK_SAFE_ENV".to_string(), "visible".to_string()),
+    ]);
+    let command = build_command(
+        &CommandShell {
+            program: "configured-shell".to_string(),
+            args: vec!["-c".to_string()],
+        },
+        "echo hook-ran",
+        &environment,
+        &env,
+        &identity.reserved_environment(),
+    );
+
+    assert_eq!(
+        configured_environment_value(&command, CODEX_THREAD_ID_ENV_VAR),
+        Some(Some(OsString::from(identity.thread_id.to_string())))
+    );
+    assert_eq!(
+        configured_environment_value(&command, CODEX_PARENT_THREAD_ID_ENV_VAR),
+        Some(Some(OsString::from(
+            identity.parent_thread_id.expect("child").to_string()
+        )))
+    );
+    assert_eq!(
+        configured_environment_value(&command, CODEX_SESSION_ID_ENV_VAR),
+        Some(Some(OsString::from(identity.session_id.to_string())))
+    );
+    assert_eq!(
+        configured_environment_value(&command, "CODEX_HOOK_SAFE_ENV"),
+        Some(Some(OsString::from("visible")))
+    );
+}
+
+#[test]
+fn root_identity_exports_no_parent_and_drops_stale_snapshot_parent() {
+    let thread_id = ThreadId::new();
+    let identity = HookSessionIdentity::root(thread_id);
+    let mut environment = spoofed_identity_env();
+    environment.push((
+        OsString::from("CODEX_HOOK_SNAPSHOT"),
+        OsString::from("captured"),
+    ));
+
+    identity.apply_to_environment(&mut environment);
+
+    assert_eq!(
+        environment,
+        vec![
+            (
+                OsString::from("CODEX_HOOK_SNAPSHOT"),
+                OsString::from("captured"),
+            ),
+            (
+                OsString::from(CODEX_THREAD_ID_ENV_VAR),
+                OsString::from(thread_id.to_string()),
+            ),
+            (
+                OsString::from(CODEX_SESSION_ID_ENV_VAR),
+                OsString::from(thread_id.to_string()),
+            ),
+        ]
+    );
+    let command = build_command(
+        &CommandShell {
+            program: "configured-shell".to_string(),
+            args: vec!["-c".to_string()],
+        },
+        "echo hook-ran",
+        &environment,
+        &HashMap::from([(
+            CODEX_PARENT_THREAD_ID_ENV_VAR.to_string(),
+            "handler".to_string(),
+        )]),
+        &identity.reserved_environment(),
+    );
+    // A root exports no parent, and a handler cannot fake one either.
+    assert_eq!(
+        configured_environment_value(&command, CODEX_THREAD_ID_ENV_VAR),
+        Some(Some(OsString::from(thread_id.to_string())))
+    );
+    assert_eq!(
+        configured_environment_value(&command, CODEX_PARENT_THREAD_ID_ENV_VAR),
+        None
+    );
+    assert_eq!(
+        configured_environment_value(&command, CODEX_SESSION_ID_ENV_VAR),
+        Some(Some(OsString::from(thread_id.to_string())))
+    );
+}
+
+fn child_identity() -> HookSessionIdentity {
+    let root_thread_id = ThreadId::new();
+    HookSessionIdentity {
+        thread_id: ThreadId::new(),
+        parent_thread_id: Some(root_thread_id),
+        session_id: SessionId::from(root_thread_id),
+    }
+}
+
+fn spoofed_identity_env() -> Vec<(OsString, OsString)> {
+    vec![
+        (
+            OsString::from(CODEX_THREAD_ID_ENV_VAR),
+            OsString::from("spoofed-thread"),
+        ),
+        (
+            OsString::from(CODEX_PARENT_THREAD_ID_ENV_VAR),
+            OsString::from("spoofed-parent"),
+        ),
+        (
+            OsString::from(CODEX_SESSION_ID_ENV_VAR),
+            OsString::from("spoofed-session"),
+        ),
+    ]
+}
+
 #[test]
 fn fallback_shell_uses_snapshot() {
     #[cfg(windows)]
@@ -249,6 +446,7 @@ fn fallback_shell_uses_snapshot() {
         "echo hook-ran",
         &[(OsString::from(name), OsString::from(program))],
         &HashMap::new(),
+        /*reserved_environment*/ &[],
     );
 
     assert_eq!(command.as_std().get_program(), OsStr::new(program));
@@ -272,7 +470,13 @@ fn runtime() -> (CommandHookRuntime, Receiver<HookCompletedEvent>) {
 fn runtime_with_environment(
     environment: Arc<Vec<(OsString, OsString)>>,
 ) -> (CommandHookRuntime, Receiver<HookCompletedEvent>) {
-    let thread_id = ThreadId::new();
+    runtime_with_environment_and_identity(environment, HookSessionIdentity::root(ThreadId::new()))
+}
+
+fn runtime_with_environment_and_identity(
+    environment: Arc<Vec<(OsString, OsString)>>,
+    identity: HookSessionIdentity,
+) -> (CommandHookRuntime, Receiver<HookCompletedEvent>) {
     let (result_sender, result_receiver) = async_channel::unbounded();
     let runtime = CommandHookRuntime::new(
         CommandShell {
@@ -280,7 +484,7 @@ fn runtime_with_environment(
             args: Vec::new(),
         },
         environment,
-        thread_id,
+        identity,
         result_sender,
     );
     (runtime, result_receiver)

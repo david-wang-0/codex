@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-#[cfg(not(windows))]
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::future::Future;
@@ -36,7 +35,8 @@ use super::dispatcher::hook_source_label;
 use super::dispatcher::scope_for_event;
 use crate::output_spill::AdditionalContext;
 use crate::output_spill::HookOutputSpiller;
-use codex_protocol::ThreadId;
+use crate::types::HookSessionIdentity;
+use crate::types::is_reserved_identity_env_var;
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::HookHandlerType;
 use codex_protocol::protocol::HookOutputEntry;
@@ -49,6 +49,8 @@ const MAX_CONCURRENT_ASYNC_HOOKS: usize = 8;
 pub(crate) struct CommandHookRuntime {
     shell: CommandShell,
     environment: Arc<Vec<(OsString, OsString)>>,
+    /// Reserved thread identity variables applied after handler-configured env.
+    reserved_environment: Arc<Vec<(OsString, OsString)>>,
     result_sender: Sender<HookCompletedEvent>,
     state: Arc<Mutex<CommandHookRuntimeState>>,
     output_spiller: HookOutputSpiller,
@@ -72,15 +74,16 @@ impl CommandHookRuntime {
     pub(crate) fn new(
         shell: CommandShell,
         environment: Arc<Vec<(OsString, OsString)>>,
-        thread_id: ThreadId,
+        identity: HookSessionIdentity,
         result_sender: Sender<HookCompletedEvent>,
     ) -> Self {
         Self {
             shell,
             environment,
+            reserved_environment: Arc::new(identity.reserved_environment()),
             result_sender,
             state: Arc::new(Mutex::new(CommandHookRuntimeState::default())),
-            output_spiller: HookOutputSpiller::new(thread_id),
+            output_spiller: HookOutputSpiller::new(identity.thread_id),
         }
     }
 
@@ -94,6 +97,7 @@ impl CommandHookRuntime {
         Self {
             shell,
             environment: Arc::clone(&self.environment),
+            reserved_environment: Arc::clone(&self.reserved_environment),
             result_sender: self.result_sender.clone(),
             state: Arc::clone(&self.state),
             output_spiller: self.output_spiller.clone(),
@@ -213,7 +217,13 @@ pub(crate) async fn run_command(
     let started_at = chrono::Utc::now().timestamp();
     let started = Instant::now();
 
-    let mut command = build_command(&runtime.shell, command, &runtime.environment, env);
+    let mut command = build_command(
+        &runtime.shell,
+        command,
+        &runtime.environment,
+        env,
+        &runtime.reserved_environment,
+    );
     command
         .current_dir(cwd)
         .stdin(Stdio::piped())
@@ -392,6 +402,7 @@ fn build_command(
     command_line: &str,
     environment: &[(OsString, OsString)],
     env: &HashMap<String, String>,
+    reserved_environment: &[(OsString, OsString)],
 ) -> Command {
     let mut command = if shell.program.is_empty() {
         default_shell_command(environment)
@@ -420,7 +431,14 @@ fn build_command(
     // Replay the session snapshot instead of inheriting the live process environment.
     command.env_clear();
     command.envs(environment.iter().cloned());
-    command.envs(env);
+    // Reserved thread identity names are runtime metadata: a handler cannot
+    // set them (not even a parent for a root thread), and the runtime's values
+    // win over both the captured snapshot and the handler-configured env.
+    command.envs(
+        env.iter()
+            .filter(|(name, _)| !is_reserved_identity_env_var(OsStr::new(name))),
+    );
+    command.envs(reserved_environment.iter().cloned());
     scrub_non_inheritable_env_vars(command.as_std_mut());
     command
 }

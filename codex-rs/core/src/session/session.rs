@@ -1331,7 +1331,11 @@ impl Session {
             .await;
             let (hooks, async_hook_results) = Hooks::new(
                 hooks_config,
-                thread_id,
+                HookSessionIdentity {
+                    thread_id,
+                    parent_thread_id,
+                    session_id,
+                },
                 Arc::new(CoreHookMcpExecutor {
                     runtime: Arc::clone(&mcp_runtime),
                     thread_id,

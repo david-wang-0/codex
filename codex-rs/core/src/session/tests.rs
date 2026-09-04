@@ -867,7 +867,7 @@ async fn preview_session_start_hooks(
             config_layer_stack: Some(config.config_layer_stack.clone()),
             ..HooksConfig::default()
         },
-        thread_id,
+        HookSessionIdentity::root(thread_id),
         Arc::new(CoreHookMcpExecutor {
             runtime: Arc::new(McpRuntime::empty(config.prefix_mcp_tool_names())),
             thread_id,
@@ -6507,7 +6507,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             legacy_notify_argv: config.notify.clone(),
             ..HooksConfig::default()
         },
-        thread_id,
+        HookSessionIdentity::root(thread_id),
         Arc::new(CoreHookMcpExecutor {
             runtime: Arc::clone(&mcp_runtime),
             thread_id,
@@ -8807,7 +8807,7 @@ where
             legacy_notify_argv: config.notify.clone(),
             ..HooksConfig::default()
         },
-        thread_id,
+        HookSessionIdentity::root(thread_id),
         Arc::new(CoreHookMcpExecutor {
             runtime: Arc::clone(&mcp_runtime),
             thread_id,

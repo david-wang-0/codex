@@ -1,15 +1,100 @@
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use chrono::DateTime;
 use chrono::SecondsFormat;
 use chrono::Utc;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::shell_environment::CODEX_PARENT_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde::Serializer;
 
 pub type HookFn = Arc<dyn for<'a> Fn(&'a HookPayload) -> BoxFuture<'a, HookResult> + Send + Sync>;
+
+/// Identity of the Codex thread whose hooks are being run.
+///
+/// Hook child processes (command hooks and legacy `notify`) receive these IDs
+/// as reserved environment variables (`CODEX_THREAD_ID`,
+/// `CODEX_PARENT_THREAD_ID`, `CODEX_SESSION_ID`), applied after any
+/// handler-configured environment so hook configuration cannot spoof them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HookSessionIdentity {
+    /// The thread that owns the hooks.
+    pub thread_id: ThreadId,
+    /// The immediate native parent thread; `None` for a root thread.
+    pub parent_thread_id: Option<ThreadId>,
+    /// The identity shared by the root thread and all of its descendants.
+    pub session_id: SessionId,
+}
+
+impl HookSessionIdentity {
+    /// Identity of a root thread, whose session ID is its own thread ID.
+    pub fn root(thread_id: ThreadId) -> Self {
+        Self {
+            thread_id,
+            parent_thread_id: None,
+            session_id: SessionId::from(thread_id),
+        }
+    }
+
+    /// Reserved environment variables exported to hook processes.
+    ///
+    /// `CODEX_PARENT_THREAD_ID` is only present for a child thread.
+    pub fn reserved_environment(&self) -> Vec<(OsString, OsString)> {
+        let mut reserved = vec![(
+            OsString::from(CODEX_THREAD_ID_ENV_VAR),
+            OsString::from(self.thread_id.to_string()),
+        )];
+        if let Some(parent_thread_id) = self.parent_thread_id {
+            reserved.push((
+                OsString::from(CODEX_PARENT_THREAD_ID_ENV_VAR),
+                OsString::from(parent_thread_id.to_string()),
+            ));
+        }
+        reserved.push((
+            OsString::from(CODEX_SESSION_ID_ENV_VAR),
+            OsString::from(self.session_id.to_string()),
+        ));
+        reserved
+    }
+
+    /// Replaces any ambient or configured value of a reserved identity
+    /// variable in `environment` with this identity's values.
+    ///
+    /// All three names are removed even when the identity exports nothing for
+    /// them (a root has no parent), so a stale `CODEX_PARENT_THREAD_ID` cannot
+    /// leak through from the captured process environment.
+    pub fn apply_to_environment(&self, environment: &mut Vec<(OsString, OsString)>) {
+        environment.retain(|(name, _)| !is_reserved_identity_env_var(name));
+        environment.extend(self.reserved_environment());
+    }
+}
+
+/// Whether `name` is one of the reserved thread identity environment variables.
+pub(crate) fn is_reserved_identity_env_var(name: &OsStr) -> bool {
+    [
+        CODEX_THREAD_ID_ENV_VAR,
+        CODEX_PARENT_THREAD_ID_ENV_VAR,
+        CODEX_SESSION_ID_ENV_VAR,
+    ]
+    .iter()
+    .any(|reserved| {
+        #[cfg(windows)]
+        {
+            name.to_string_lossy().eq_ignore_ascii_case(reserved)
+        }
+        #[cfg(not(windows))]
+        {
+            name == OsStr::new(reserved)
+        }
+    })
+}
 
 #[derive(Debug)]
 pub enum HookResult {

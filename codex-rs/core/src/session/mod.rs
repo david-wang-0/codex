@@ -73,6 +73,7 @@ use codex_features::FEATURES;
 use codex_features::Feature;
 use codex_features::unstable_features_warning_event;
 use codex_history::RolloutItem;
+use codex_hooks::HookSessionIdentity;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_login::AuthManager;

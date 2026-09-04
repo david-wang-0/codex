@@ -45,6 +45,7 @@ use super::ConfiguredHandler;
 use super::ConfiguredHandlerKind;
 use super::HandlerSourcePath;
 use super::HookListEntryHandler;
+use crate::HookSessionIdentity;
 use crate::events::interrupt::InterruptRequest;
 use crate::events::pre_tool_use::PreToolUseRequest;
 use crate::events::stop::StopHookTarget;
@@ -61,7 +62,7 @@ fn command_runtime(shell: CommandShell) -> CommandHookRuntime {
     CommandHookRuntime::new(
         shell,
         Arc::new(std::env::vars_os().collect()),
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         result_sender,
     )
 }
@@ -274,7 +275,7 @@ fn required_managed_hooks_allow_disabled_hooks_feature() {
                 plugin_hook_sources,
                 ..Default::default()
             },
-            ThreadId::new(),
+            HookSessionIdentity::root(ThreadId::new()),
             mcp_executor(),
         )
         .expect("disabled hooks feature should not enforce managed requirements hooks");
@@ -299,7 +300,7 @@ fn required_managed_hooks_reject_invalid_matchers() {
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .err()
@@ -327,7 +328,7 @@ fn required_managed_hooks_allow_invalid_matchers_without_handlers() {
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .expect("an empty matcher group should not prevent required managed hooks from loading");
@@ -350,7 +351,7 @@ fn required_managed_hooks_reject_empty_commands() {
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .err()
@@ -380,7 +381,7 @@ fn required_managed_hooks_reject_unsupported_handler_types() {
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .err()
@@ -420,7 +421,7 @@ fn required_managed_mcp_hooks_reject_empty_targets() {
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .err()
@@ -460,7 +461,7 @@ fn required_managed_session_end_mcp_hooks_reject_startup() {
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .err()
@@ -487,7 +488,7 @@ fn required_managed_hooks_with_unknown_source_still_reject_discovery_failures() 
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .err()
@@ -510,7 +511,7 @@ fn valid_required_managed_hooks_allow_startup() {
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .expect("valid managed requirements hook should allow startup");
@@ -539,7 +540,7 @@ fn managed_config_layer_hook_failures_remain_startup_warnings() {
             config_layer_stack: Some(config_layer_stack),
             ..Default::default()
         },
-        ThreadId::new(),
+        HookSessionIdentity::root(ThreadId::new()),
         mcp_executor(),
     )
     .expect("managed config layer hooks should remain optional");

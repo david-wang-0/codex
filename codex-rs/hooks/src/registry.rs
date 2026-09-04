@@ -27,11 +27,11 @@ use crate::types::Hook;
 use crate::types::HookEvent;
 use crate::types::HookPayload;
 use crate::types::HookResponse;
+use crate::types::HookSessionIdentity;
 use async_channel::Receiver;
 use codex_config::ConfigLayerStack;
 use codex_plugin::ExecutorPluginHookSource;
 use codex_plugin::PluginHookSource;
-use codex_protocol::ThreadId;
 use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
 use std::ffi::OsString;
 use std::sync::Arc;
@@ -68,15 +68,19 @@ pub struct Hooks {
 impl Hooks {
     /// Bind this session's hook runtime and output files to its thread, rejecting unloadable
     /// required managed hooks.
+    ///
+    /// The captured environment snapshot carries the thread identity as reserved
+    /// variables so every hook process (including legacy `notify`) can identify
+    /// the current, parent and root threads.
     pub fn new(
         config: HooksConfig,
-        thread_id: ThreadId,
+        identity: HookSessionIdentity,
         mcp_executor: Arc<dyn HookMcpExecutor>,
     ) -> anyhow::Result<(Self, Receiver<codex_protocol::protocol::HookCompletedEvent>)> {
         let (result_sender, result_receiver) = async_channel::unbounded();
-        let environment = Arc::new(std::env::vars_os().collect());
+        let environment = Arc::new(session_environment_snapshot(&identity));
         let hooks = Self::from_config(config, mcp_executor, Arc::clone(&environment), |shell| {
-            CommandHookRuntime::new(shell, environment, thread_id, result_sender)
+            CommandHookRuntime::new(shell, environment, identity, result_sender)
         });
         let required_load_errors = hooks.engine.required_load_errors();
         if !required_load_errors.is_empty() {
@@ -306,6 +310,14 @@ pub fn list_hooks(config: HooksConfig) -> HookListOutcome {
 }
 
 // TODO: Remove this legacy-notify-only command builder when `notify` support is removed.
+/// The live process environment with the thread identity's reserved variables
+/// overlaid, replacing any ambient values of the same names.
+fn session_environment_snapshot(identity: &HookSessionIdentity) -> Vec<(OsString, OsString)> {
+    let mut environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+    identity.apply_to_environment(&mut environment);
+    environment
+}
+
 pub(crate) fn command_from_argv(
     argv: &[String],
     environment: impl IntoIterator<Item = (OsString, OsString)>,
