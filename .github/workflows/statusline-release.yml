@@ -17,12 +17,16 @@ jobs:
   release:
     name: Build and publish Linux x86_64 binary
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: codex-rs
     env:
       CARGO_INCREMENTAL: "0"
+      # Keep CI publication practical on standard runners; the final archive is stripped.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_DEBUG: "none"
       SCCACHE_CACHE_SIZE: 10G
 
     steps:
@@ -53,7 +57,7 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Test Claude-style status line
-        run: cargo nextest run --release -p codex-tui claude_status_line
+        run: just test -p codex-tui claude_status_line
 
       - name: Build Codex
         run: cargo build --release -p codex-cli --bin codex
