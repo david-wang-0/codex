@@ -13,6 +13,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -32,6 +33,7 @@ use crate::mcp::ToolPluginProvenance;
 use crate::openai_docs_source_attribution::maybe_with_openai_docs_source_attribution;
 use crate::pagination::collect_paginated_with_limit;
 use crate::runtime::McpRuntimeContext;
+use crate::runtime::McpSessionIdentity;
 use crate::runtime::emit_duration;
 use crate::server::EffectiveMcpServer;
 use crate::server::has_explicit_http_authorization;
@@ -58,6 +60,9 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpStartupStatus;
 use codex_protocol::protocol::McpStartupUpdateEvent;
+use codex_protocol::shell_environment::CODEX_PARENT_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
 use codex_rmcp_client::ExecutorStdioServerLauncher;
 use codex_rmcp_client::LocalStdioServerLauncher;
 use codex_rmcp_client::McpOAuthRefreshMode;
@@ -1058,6 +1063,48 @@ fn mcp_server_info_from_implementation(
     }
 }
 
+/// Overlays the owning thread identity onto a stdio MCP server's configured env.
+///
+/// The reserved identity variables are inserted after the configured `env`
+/// map, so static MCP configuration cannot override them. A context without an
+/// identity leaves the configured env untouched.
+fn stdio_env_with_session_identity(
+    env: Option<HashMap<OsString, OsString>>,
+    session_identity: Option<&McpSessionIdentity>,
+) -> Option<HashMap<OsString, OsString>> {
+    let Some(identity) = session_identity else {
+        return env;
+    };
+    let mut env = env.unwrap_or_default();
+    let reserved = [
+        (
+            CODEX_THREAD_ID_ENV_VAR,
+            Some(identity.thread_id.to_string()),
+        ),
+        (
+            CODEX_PARENT_THREAD_ID_ENV_VAR,
+            identity
+                .parent_thread_id
+                .map(|thread_id| thread_id.to_string()),
+        ),
+        (
+            CODEX_SESSION_ID_ENV_VAR,
+            Some(identity.session_id.to_string()),
+        ),
+    ];
+    for (name, value) in reserved {
+        // Reserved names are runtime metadata: drop any configured value even
+        // when the runtime has nothing to export (a root has no parent).
+        env.remove(OsStr::new(name));
+        #[cfg(windows)]
+        env.retain(|existing, _| !existing.to_string_lossy().eq_ignore_ascii_case(name));
+        if let Some(value) = value {
+            env.insert(OsString::from(name), OsString::from(value));
+        }
+    }
+    Some(env)
+}
+
 struct StartServerTaskParams {
     is_codex_apps_mcp_server: bool,
     startup_timeout: Option<Duration>, // TODO: cancel_token should handle this.
@@ -1114,11 +1161,14 @@ pub(crate) async fn make_rmcp_client(
         } => {
             let command_os: OsString = command.into();
             let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
-            let env_os = env.map(|env| {
-                env.into_iter()
-                    .map(|(key, value)| (key.into(), value.into()))
-                    .collect::<HashMap<_, _>>()
-            });
+            let env_os = stdio_env_with_session_identity(
+                env.map(|env| {
+                    env.into_iter()
+                        .map(|(key, value)| (key.into(), value.into()))
+                        .collect::<HashMap<_, _>>()
+                }),
+                runtime_context.session_identity(),
+            );
             let launcher = if is_local_environment {
                 // TODO(starr): Unify local stdio MCP launch with
                 // `ExecutorStdioServerLauncher` once the executor-backed path
@@ -1221,12 +1271,86 @@ pub(crate) async fn make_rmcp_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::SessionId;
+    use codex_protocol::ThreadId;
     use codex_protocol::mcp::MCP_APP_UI_EXTENSION_ID;
     use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
     use pretty_assertions::assert_eq;
     use rmcp::model::JsonObject;
     use rmcp::model::MetaObject;
     use rmcp::transport::auth::AuthError;
+
+    fn os_env(pairs: &[(&str, &str)]) -> HashMap<OsString, OsString> {
+        pairs
+            .iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+            .collect()
+    }
+
+    #[test]
+    fn stdio_env_without_session_identity_is_unchanged() {
+        let configured = os_env(&[("MCP_TEST_VALUE", "configured")]);
+
+        assert_eq!(
+            stdio_env_with_session_identity(/*env*/ None, /*session_identity*/ None),
+            None
+        );
+        assert_eq!(
+            stdio_env_with_session_identity(
+                Some(configured.clone()),
+                /*session_identity*/ None
+            ),
+            Some(configured)
+        );
+    }
+
+    #[test]
+    fn stdio_env_reserved_identity_overrides_configured_env() {
+        let root_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let configured = os_env(&[
+            ("MCP_TEST_VALUE", "configured"),
+            (CODEX_THREAD_ID_ENV_VAR, "spoofed-thread"),
+            (CODEX_PARENT_THREAD_ID_ENV_VAR, "spoofed-parent"),
+            (CODEX_SESSION_ID_ENV_VAR, "spoofed-session"),
+        ]);
+
+        let root = McpSessionIdentity {
+            thread_id: root_thread_id,
+            parent_thread_id: None,
+            session_id: SessionId::from(root_thread_id),
+        };
+        let child = McpSessionIdentity {
+            thread_id: child_thread_id,
+            parent_thread_id: Some(root_thread_id),
+            session_id: SessionId::from(root_thread_id),
+        };
+
+        assert_eq!(
+            stdio_env_with_session_identity(/*env*/ None, Some(&root)),
+            Some(os_env(&[
+                (CODEX_THREAD_ID_ENV_VAR, &root_thread_id.to_string()),
+                (CODEX_SESSION_ID_ENV_VAR, &root_thread_id.to_string()),
+            ]))
+        );
+        assert_eq!(
+            stdio_env_with_session_identity(Some(configured.clone()), Some(&root)),
+            Some(os_env(&[
+                ("MCP_TEST_VALUE", "configured"),
+                (CODEX_THREAD_ID_ENV_VAR, &root_thread_id.to_string()),
+                (CODEX_SESSION_ID_ENV_VAR, &root_thread_id.to_string()),
+            ]))
+        );
+        assert_eq!(
+            stdio_env_with_session_identity(Some(configured), Some(&child)),
+            Some(os_env(&[
+                ("MCP_TEST_VALUE", "configured"),
+                (CODEX_THREAD_ID_ENV_VAR, &child_thread_id.to_string()),
+                (CODEX_PARENT_THREAD_ID_ENV_VAR, &root_thread_id.to_string()),
+                (CODEX_SESSION_ID_ENV_VAR, &root_thread_id.to_string()),
+            ]))
+        );
+    }
 
     #[test]
     fn startup_outcome_error_identifies_authentication_required() {

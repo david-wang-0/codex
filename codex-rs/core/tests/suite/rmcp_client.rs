@@ -23,8 +23,10 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerEnvVar;
 use codex_config::types::McpServerTransportConfig;
 use codex_config::types::OAuthCredentialsStoreMode;
+use codex_core::CodexThread;
 use codex_core::EnvironmentConfig;
 use codex_core::EnvironmentMcpPolicy;
+use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -71,14 +73,19 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::McpStartupFailureReason;
 use codex_protocol::protocol::McpStartupStatus;
 use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_protocol::shell_environment::CODEX_PARENT_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::cargo_bin;
 use codex_utils_path_uri::PathUri;
@@ -1055,6 +1062,134 @@ async fn stdio_server_round_trip(server_name: &'static str, namespace: &str) -> 
     assert_eq!(output_json["env"], expected_env_value);
 
     server.verify().await;
+
+    Ok(())
+}
+
+const IDENTITY_ENV_VARS: [&str; 3] = [
+    CODEX_THREAD_ID_ENV_VAR,
+    CODEX_PARENT_THREAD_ID_ENV_VAR,
+    CODEX_SESSION_ID_ENV_VAR,
+];
+
+/// Returns each identity variable as the running stdio echo tool sees it.
+async fn echoed_identity_env(
+    codex: &CodexThread,
+    server_name: &str,
+) -> anyhow::Result<BTreeMap<String, Option<String>>> {
+    let mut echoed = BTreeMap::new();
+    for env_var in IDENTITY_ENV_VARS {
+        let result = codex
+            .call_mcp_tool(
+                server_name,
+                "echo",
+                Some(json!({ "message": env_var, "env_var": env_var })),
+                /*meta*/ None,
+            )
+            .await?;
+        assert_eq!(result.is_error, Some(false));
+        let env_value = result
+            .structured_content
+            .as_ref()
+            .and_then(|structured| structured.get("env"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        echoed.insert(env_var.to_string(), env_value);
+    }
+    Ok(echoed)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdio_server_receives_owning_thread_identity_env() -> anyhow::Result<()> {
+    // TODO(anp): Remove after packaging a Windows stdio test server for Wine exec.
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let server_name = "rmcp_identity";
+    let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_config(move |config| {
+            insert_mcp_server(
+                config,
+                server_name,
+                stdio_transport(
+                    rmcp_test_server_bin,
+                    // Static configuration must not be able to spoof the identity.
+                    Some(HashMap::from([
+                        (CODEX_THREAD_ID_ENV_VAR.to_string(), "spoofed".to_string()),
+                        (
+                            CODEX_PARENT_THREAD_ID_ENV_VAR.to_string(),
+                            "spoofed".to_string(),
+                        ),
+                        (CODEX_SESSION_ID_ENV_VAR.to_string(), "spoofed".to_string()),
+                    ])),
+                    Vec::new(),
+                ),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
+
+    let root_thread_id = fixture.session_configured.thread_id.to_string();
+    let root_session_id = fixture.session_configured.session_id.to_string();
+    assert_eq!(root_thread_id, root_session_id);
+    assert_eq!(
+        echoed_identity_env(&fixture.codex, server_name).await?,
+        BTreeMap::from([
+            (
+                CODEX_THREAD_ID_ENV_VAR.to_string(),
+                Some(root_thread_id.clone())
+            ),
+            (CODEX_PARENT_THREAD_ID_ENV_VAR.to_string(), None),
+            (
+                CODEX_SESSION_ID_ENV_VAR.to_string(),
+                Some(root_session_id.clone())
+            ),
+        ])
+    );
+
+    let child = fixture
+        .thread_manager
+        .spawn_internal_session(
+            fixture.session_configured.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::Internal(InternalSessionSource::Guardian)),
+                environments: Some(
+                    fixture
+                        .codex
+                        .config_snapshot()
+                        .await
+                        .environments
+                        .environments,
+                ),
+                ..StartThreadOptions::new(fixture.config.clone())
+            },
+        )
+        .await?;
+    wait_for_mcp_server(&child.thread, server_name).await?;
+
+    let child_thread_id = child.session_configured.thread_id.to_string();
+    assert_ne!(child_thread_id, root_thread_id);
+    assert_eq!(
+        echoed_identity_env(&child.thread, server_name).await?,
+        BTreeMap::from([
+            (CODEX_THREAD_ID_ENV_VAR.to_string(), Some(child_thread_id)),
+            (
+                CODEX_PARENT_THREAD_ID_ENV_VAR.to_string(),
+                Some(root_thread_id)
+            ),
+            (CODEX_SESSION_ID_ENV_VAR.to_string(), Some(root_session_id)),
+        ])
+    );
 
     Ok(())
 }

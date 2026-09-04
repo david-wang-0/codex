@@ -14,6 +14,7 @@ use codex_mcp::ElicitationReviewerHandle;
 use codex_mcp::McpEnvironmentAuthority;
 use codex_mcp::McpServerRegistration;
 use codex_mcp::McpServerSource;
+use codex_mcp::McpSessionIdentity;
 use codex_mcp::McpStartupPolicy;
 use codex_mcp::PreparedMcpCall;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -28,9 +29,23 @@ pub(super) struct McpDesiredState {
     pub(super) session_source: SessionSource,
     pub(super) environments: TurnEnvironmentSnapshot,
     pub(super) local_process_cwd: PathBuf,
+    pub(super) session_identity: McpSessionIdentity,
 }
 
 impl Session {
+    /// Identity exported to this session's MCP servers: current thread, native
+    /// parent (if any), and the shared root session.
+    pub(super) fn mcp_session_identity(
+        &self,
+        parent_thread_id: Option<ThreadId>,
+    ) -> McpSessionIdentity {
+        McpSessionIdentity {
+            thread_id: self.thread_id(),
+            parent_thread_id,
+            session_id: self.session_id(),
+        }
+    }
+
     pub(super) fn mcp_inputs_differ(
         &self,
         current: &SessionConfiguration,
@@ -98,6 +113,7 @@ impl Session {
             session_source: session_configuration.session_source.clone(),
             environments,
             local_process_cwd,
+            session_identity: self.mcp_session_identity(session_configuration.parent_thread_id),
         }
     }
 
@@ -124,6 +140,7 @@ impl Session {
             session_source: session_configuration.session_source.clone(),
             environments: resolved_environments.clone(),
             local_process_cwd,
+            session_identity: self.mcp_session_identity(session_configuration.parent_thread_id),
         };
         self.publish_mcp_runtime(
             &desired,
@@ -379,7 +396,8 @@ impl Session {
                     )
                 })
                 .collect(),
-        );
+        )
+        .with_session_identity(desired.session_identity.clone());
         McpRuntimeInput {
             startup_policy: if matches!(desired.session_source, SessionSource::SubAgent(_)) {
                 McpStartupPolicy::LazyWhenCached

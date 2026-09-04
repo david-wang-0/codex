@@ -24,6 +24,7 @@ use codex_exec_server::HttpClient;
 use codex_exec_server::RouteAwareHttpClient;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::mcp::CallToolResult;
@@ -664,6 +665,21 @@ pub struct SandboxState {
     pub use_legacy_landlock: bool,
 }
 
+/// Identity of the Codex thread that owns an MCP runtime.
+///
+/// Stdio MCP servers receive these IDs as reserved environment variables
+/// (`CODEX_THREAD_ID`, `CODEX_PARENT_THREAD_ID`, `CODEX_SESSION_ID`) before the
+/// first MCP request so they can bind to their owning thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpSessionIdentity {
+    /// The thread that owns the runtime.
+    pub thread_id: ThreadId,
+    /// The immediate native parent thread; `None` for a root thread.
+    pub parent_thread_id: Option<ThreadId>,
+    /// The identity shared by the root thread and all of its descendants.
+    pub session_id: SessionId,
+}
+
 /// Runtime context used when resolving per-server MCP environments.
 ///
 /// `McpConfig` describes what servers exist. This value carries the canonical
@@ -674,6 +690,7 @@ pub struct McpRuntimeContext {
     selected_environments: HashMap<String, Arc<Environment>>,
     local_process_cwd: PathBuf,
     local_http_client: Arc<dyn HttpClient>,
+    session_identity: Option<McpSessionIdentity>,
 }
 
 /// Applies the local HTTP headers helper configured for an MCP server.
@@ -718,6 +735,7 @@ impl McpRuntimeContext {
             selected_environments: HashMap::new(),
             local_process_cwd,
             local_http_client,
+            session_identity: None,
         }
     }
 
@@ -728,6 +746,18 @@ impl McpRuntimeContext {
     ) -> Self {
         self.selected_environments = selected_environments;
         self
+    }
+
+    /// Records the owning thread identity exported to stdio MCP servers.
+    ///
+    /// Contexts without an identity (standalone MCP operations) export nothing.
+    pub fn with_session_identity(mut self, session_identity: McpSessionIdentity) -> Self {
+        self.session_identity = Some(session_identity);
+        self
+    }
+
+    pub(crate) fn session_identity(&self) -> Option<&McpSessionIdentity> {
+        self.session_identity.as_ref()
     }
 
     pub(crate) fn local_process_cwd(&self) -> PathBuf {

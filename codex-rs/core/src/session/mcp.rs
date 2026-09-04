@@ -98,11 +98,12 @@ impl Session {
         config: &Config,
     ) -> (McpConfig, McpRuntimeContext) {
         let originator = self.originator().await;
-        let (session_source, host_fallback_cwd) = {
+        let (session_source, host_fallback_cwd, parent_thread_id) = {
             let state = self.state.lock().await;
             (
                 state.session_configuration.session_source.clone(),
                 state.session_configuration.cwd().clone(),
+                state.session_configuration.parent_thread_id,
             )
         };
         let environments = self.services.turn_environments.snapshot().await;
@@ -161,7 +162,8 @@ impl Session {
                     )
                 })
                 .collect(),
-        );
+        )
+        .with_session_identity(self.mcp_session_identity(parent_thread_id));
         (mcp_config, runtime_context)
     }
 
