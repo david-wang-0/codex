@@ -16,6 +16,7 @@ pub(crate) struct ClaudeLimit {
     pub(crate) label: &'static str,
     pub(crate) used_percent: i64,
     pub(crate) resets_at: Option<i64>,
+    pub(crate) resets_left: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,12 +126,8 @@ fn right_line(data: &ClaudeStatusLineData, include_resets: bool) -> Line<'static
             format!("{}%", limit.used_percent),
             usage_style(limit.used_percent),
         ));
-        if include_resets
-            && let Some(reset) = limit
-                .resets_at
-                .and_then(|at| reset_countdown(at, data.now_epoch_seconds))
-        {
-            spans.push(Span::styled(format!(" (↻{reset})"), gray));
+        if include_resets && let Some(details) = reset_details(limit, data.now_epoch_seconds) {
+            spans.push(Span::styled(format!(" ({details})"), gray));
         }
     }
     Line::from(spans)
@@ -186,6 +183,23 @@ fn reset_countdown(resets_at: i64, now: i64) -> Option<String> {
         Some(format!("{hours}h{minutes}m"))
     } else {
         Some(format!("{minutes}m"))
+    }
+}
+
+fn reset_details(limit: &ClaudeLimit, now: i64) -> Option<String> {
+    let countdown = limit
+        .resets_at
+        .and_then(|at| reset_countdown(at, now))
+        .map(|remaining| format!("↻{remaining}"));
+    let count = limit.resets_left.map(|count| {
+        let suffix = if count == 1 { "reset" } else { "resets" };
+        format!("{count} {suffix} left")
+    });
+    match (countdown, count) {
+        (Some(countdown), Some(count)) => Some(format!("{countdown}; {count}")),
+        (Some(countdown), None) => Some(countdown),
+        (None, Some(count)) => Some(count),
+        (None, None) => None,
     }
 }
 

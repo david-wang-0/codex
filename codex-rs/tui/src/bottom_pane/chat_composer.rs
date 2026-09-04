@@ -6089,11 +6089,13 @@ mod tests {
                         label: "5h",
                         used_percent: 49,
                         resets_at: Some(10_800),
+                        resets_left: None,
                     }),
                     weekly: Some(ClaudeLimit {
                         label: "7d",
                         used_percent: 85,
                         resets_at: Some(180_000),
+                        resets_left: Some(2),
                     }),
                     now_epoch_seconds: 0,
                 })));

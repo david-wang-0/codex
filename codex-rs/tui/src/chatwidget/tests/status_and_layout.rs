@@ -238,7 +238,7 @@ async fn claude_status_line_separates_model_max_from_effective_context_window() 
     );
 
     let rendered = chat
-        .claude_status_line()
+        .claude_status_line(&[crate::bottom_pane::StatusLineItem::FiveHourLimit])
         .spans
         .iter()
         .map(|span| span.content.as_ref())
@@ -252,6 +252,80 @@ async fn claude_status_line_separates_model_max_from_effective_context_window() 
         rendered.contains("ctx 134/258k (51%)"),
         "expected effective session context: {rendered}"
     );
+}
+
+#[tokio::test]
+async fn claude_status_line_supports_pro_and_plus_limit_signatures() {
+    use crate::bottom_pane::StatusLineItem;
+    use crate::chatwidget::status_surfaces::matches_claude_status_line_items;
+
+    let pro_items = [
+        StatusLineItem::ThreadTitle,
+        StatusLineItem::CurrentDir,
+        StatusLineItem::GitBranch,
+        StatusLineItem::ModelWithReasoning,
+        StatusLineItem::ContextUsed,
+        StatusLineItem::ContextWindowSize,
+        StatusLineItem::UsedTokens,
+        StatusLineItem::WeeklyLimit,
+    ];
+    let plus_items = [
+        StatusLineItem::ThreadTitle,
+        StatusLineItem::CurrentDir,
+        StatusLineItem::GitBranch,
+        StatusLineItem::ModelWithReasoning,
+        StatusLineItem::ContextUsed,
+        StatusLineItem::ContextWindowSize,
+        StatusLineItem::UsedTokens,
+        StatusLineItem::FiveHourLimit,
+        StatusLineItem::WeeklyLimit,
+    ];
+    assert_eq!(
+        [
+            matches_claude_status_line_items(&pro_items),
+            matches_claude_status_line_items(&plus_items),
+            matches_claude_status_line_items(&[]),
+        ],
+        [true, true, false]
+    );
+
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        limit_id: None,
+        limit_name: None,
+        primary: Some(RateLimitWindow {
+            used_percent: 49,
+            window_duration_mins: Some(5 * 60),
+            resets_at: None,
+        }),
+        secondary: Some(RateLimitWindow {
+            used_percent: 85,
+            window_duration_mins: Some(7 * 24 * 60),
+            resets_at: None,
+        }),
+        credits: None,
+        individual_limit: None,
+        plan_type: None,
+        spend_control_reached: None,
+        rate_limit_reached_type: None,
+    }));
+    chat.available_rate_limit_reset_credits = Some(2);
+
+    let render = |line: Line<'static>| {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+    let pro = render(chat.claude_status_line(&pro_items));
+    let plus = render(chat.claude_status_line(&plus_items));
+
+    assert!(!pro.contains("5h 49%"), "Pro line included 5h: {pro}");
+    assert!(
+        pro.contains("7d 85% (2 resets left)"),
+        "Pro line omitted weekly resets: {pro}"
+    );
+    assert!(plus.contains("5h 49%"), "Plus line omitted 5h: {plus}");
 }
 
 #[tokio::test]

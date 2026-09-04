@@ -37,6 +37,21 @@ const CLAUDE_STATUS_LINE_ITEMS: [StatusLineItem; 9] = [
     StatusLineItem::WeeklyLimit,
 ];
 
+const CLAUDE_STATUS_LINE_ITEMS_WITHOUT_FIVE_HOUR: [StatusLineItem; 8] = [
+    StatusLineItem::ThreadTitle,
+    StatusLineItem::CurrentDir,
+    StatusLineItem::GitBranch,
+    StatusLineItem::ModelWithReasoning,
+    StatusLineItem::ContextUsed,
+    StatusLineItem::ContextWindowSize,
+    StatusLineItem::UsedTokens,
+    StatusLineItem::WeeklyLimit,
+];
+
+pub(super) fn matches_claude_status_line_items(items: &[StatusLineItem]) -> bool {
+    items == CLAUDE_STATUS_LINE_ITEMS || items == CLAUDE_STATUS_LINE_ITEMS_WITHOUT_FIVE_HOUR
+}
+
 /// Items shown in the terminal title when the user has not configured a
 /// custom selection. Intentionally minimal: activity indicator + project name.
 pub(super) const DEFAULT_TERMINAL_TITLE_ITEMS: [&str; 2] = ["activity", "project-name"];
@@ -221,8 +236,8 @@ impl ChatWidget {
             return;
         }
 
-        if selections.status_line_items.as_slice() == CLAUDE_STATUS_LINE_ITEMS {
-            let line = self.claude_status_line();
+        if matches_claude_status_line_items(&selections.status_line_items) {
+            let line = self.claude_status_line(&selections.status_line_items);
             self.set_status_line(Some(line));
             self.set_status_line_hyperlink(/*url*/ None);
             return;
@@ -247,7 +262,10 @@ impl ChatWidget {
         self.set_status_line_hyperlink(hyperlink_url);
     }
 
-    pub(super) fn claude_status_line(&mut self) -> Line<'static> {
+    pub(super) fn claude_status_line(
+        &mut self,
+        status_line_items: &[StatusLineItem],
+    ) -> Line<'static> {
         let context_window = self.status_line_context_window_size();
         let max_context_window = self
             .model_catalog
@@ -266,19 +284,25 @@ impl ChatWidget {
                 .unwrap_or(0)
         });
         let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex");
-        let five_hour = snapshot
-            .and_then(five_hour_status_window)
-            .map(|(window, _)| ClaudeLimit {
-                label: "5h",
-                used_percent: window.used_percent.round().clamp(0.0, 100.0) as i64,
-                resets_at: window.resets_at_epoch,
-            });
+        let five_hour = if status_line_items.contains(&StatusLineItem::FiveHourLimit) {
+            snapshot
+                .and_then(five_hour_status_window)
+                .map(|(window, _)| ClaudeLimit {
+                    label: "5h",
+                    used_percent: window.used_percent.round().clamp(0.0, 100.0) as i64,
+                    resets_at: window.resets_at_epoch,
+                    resets_left: None,
+                })
+        } else {
+            None
+        };
         let weekly = snapshot
             .and_then(weekly_status_window)
             .map(|(window, _)| ClaudeLimit {
                 label: "7d",
                 used_percent: window.used_percent.round().clamp(0.0, 100.0) as i64,
                 resets_at: window.resets_at_epoch,
+                resets_left: self.available_rate_limit_reset_credits,
             });
         let now_epoch_seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -25,11 +25,13 @@ fn mirrors_claude_layout_and_compacts_resets() {
             label: "5h",
             used_percent: 49,
             resets_at: Some(10_800),
+            resets_left: None,
         }),
         weekly: Some(ClaudeLimit {
             label: "7d",
             used_percent: 85,
             resets_at: Some(180_000),
+            resets_left: Some(1),
         }),
         now_epoch_seconds: 0,
     });
@@ -41,7 +43,7 @@ fn mirrors_claude_layout_and_compacts_resets() {
     );
     assert_eq!(
         text(&parts.right),
-        "gpt-5.6-sol [1M, max]  ctx 134/258k (51%) · 5h 49% (↻3h0m) · 7d 85% (↻2d2h)"
+        "gpt-5.6-sol [1M, max]  ctx 134/258k (51%) · 5h 49% (↻3h0m) · 7d 85% (↻2d2h; 1 reset left)"
     );
     assert_eq!(
         text(&parts.compact_right),
@@ -65,11 +67,13 @@ fn applies_claude_usage_color_bands() {
                 label: "5h",
                 used_percent: 49,
                 resets_at: None,
+                resets_left: None,
             }),
             weekly: Some(ClaudeLimit {
                 label: "7d",
                 used_percent: 85,
                 resets_at: None,
+                resets_left: None,
             }),
             now_epoch_seconds: 0,
         },
@@ -80,4 +84,31 @@ fn applies_claude_usage_color_bands() {
     assert_eq!(line.spans[6].style.fg, Some(Color::LightGreen));
     assert_eq!(line.spans[9].style.fg, Some(Color::Red));
     assert!(line.spans[9].style.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn formats_available_weekly_reset_details() {
+    let limit = |resets_at, resets_left| ClaudeLimit {
+        label: "7d",
+        used_percent: 50,
+        resets_at,
+        resets_left,
+    };
+
+    assert_eq!(
+        [
+            reset_details(&limit(Some(180_000), Some(1)), 0),
+            reset_details(&limit(Some(180_000), Some(2)), 0),
+            reset_details(&limit(Some(180_000), None), 0),
+            reset_details(&limit(None, Some(0)), 0),
+            reset_details(&limit(None, None), 0),
+        ],
+        [
+            Some("↻2d2h; 1 reset left".to_string()),
+            Some("↻2d2h; 2 resets left".to_string()),
+            Some("↻2d2h".to_string()),
+            Some("0 resets left".to_string()),
+            None,
+        ]
+    );
 }

@@ -11,4 +11,4 @@ expression: terminal.backend()
 "                                                                                                                                                      "
 "                                                                                                                                                      "
 "                                                                                                                                                      "
-"  status line: ./work/codex (main)                                       gpt-5.6-sol [1M, max]  ctx 134/258k (51%) · 5h 49% (↻3h0m) · 7d 85% (↻2d2h)  "
+"  status line: ./work/codex (main)                        gpt-5.6-sol [1M, max]  ctx 134/258k (51%) · 5h 49% (↻3h0m) · 7d 85% (↻2d2h; 2 resets left)  "
