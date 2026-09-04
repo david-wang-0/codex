@@ -110,3 +110,21 @@ fn environment_command() -> Command {
 fn environment_command() -> Command {
     Command::new("env")
 }
+
+#[test]
+fn thread_token_is_random_hex_and_redacts_itself() {
+    let token = ThreadToken::generate();
+    let other = ThreadToken::generate();
+    let exposed = token.expose_for_child_process_env().to_string();
+
+    assert_eq!(exposed.len(), THREAD_TOKEN_BYTES * 2);
+    assert!(
+        exposed
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "token is not lowercase hex: {exposed}"
+    );
+    assert_ne!(exposed, other.expose_for_child_process_env());
+    // A token must never reach a log line through `Debug`.
+    assert_eq!(format!("{token:?}"), "ThreadToken(<redacted>)");
+}

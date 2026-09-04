@@ -24,6 +24,7 @@ use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_permission_profile_env;
 use crate::exec_env::inject_session_id_env;
+use crate::exec_env::inject_thread_token_env;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::shell::ShellType;
@@ -115,6 +116,7 @@ impl Session {
                     session.thread_id().to_string(),
                 );
                 inject_session_id_env(&mut env, session.session_id());
+                inject_thread_token_env(&mut env, session.thread_token());
                 inject_apply_patch_env(&mut env, &config.features);
                 inject_permission_profile_env(
                     &mut env,

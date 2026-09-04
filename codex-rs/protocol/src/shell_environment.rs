@@ -1,15 +1,69 @@
 use crate::config_types::EnvironmentVariablePattern;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::config_types::ShellEnvironmentPolicyInherit;
+use rand::RngCore;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 pub const CODEX_SESSION_ID_ENV_VAR: &str = "CODEX_SESSION_ID";
 pub const CODEX_THREAD_ID_ENV_VAR: &str = "CODEX_THREAD_ID";
 pub const CODEX_PARENT_THREAD_ID_ENV_VAR: &str = "CODEX_PARENT_THREAD_ID";
+pub const CODEX_THREAD_TOKEN_ENV_VAR: &str = "CODEX_THREAD_TOKEN";
 pub const CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR: &str = "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN";
 pub const OPENAI_FEDERATION_RULE_ID_ENV_VAR: &str = "OPENAI_FEDERATION_RULE_ID";
 pub const OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR: &str = "OPENAI_IDENTITY_TOKEN_FILE";
 pub const OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR: &str = "OPENAI_WORKLOAD_IDENTITY_CONTEXT";
+
+/// Number of random bytes behind a [`ThreadToken`].
+const THREAD_TOKEN_BYTES: usize = 32;
+
+/// A per-thread secret handed to the child processes a Codex thread launches.
+///
+/// One token is generated when a thread's session is constructed and exported
+/// as `CODEX_THREAD_TOKEN` to that thread's stdio MCP servers, hook processes
+/// and model-run shell commands. It lets a process launched by this thread
+/// prove to a local service that it belongs to this thread, without the service
+/// having to ask Codex.
+///
+/// It is same-UID readable, so it proves shell membership only: holding it says
+/// the holder was launched by (or can read the environment of) this thread, not
+/// that the holder is trustworthy. A native subagent gets its own token rather
+/// than the root thread's.
+///
+/// The value is never written to disk, never logged (`Debug` redacts it), never
+/// placed in a protocol response, notification or rollout item, and never sent
+/// to the model. The type deliberately implements neither `Serialize` nor
+/// `Display` so those uses do not compile.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ThreadToken(String);
+
+impl ThreadToken {
+    /// Generates a token from 32 bytes of cryptographically secure randomness.
+    pub fn generate() -> Self {
+        // `rand::rng()` is a CSPRNG seeded from the operating system.
+        let mut bytes = [0u8; THREAD_TOKEN_BYTES];
+        rand::rng().fill_bytes(&mut bytes);
+        let mut hex = String::with_capacity(THREAD_TOKEN_BYTES * 2);
+        for byte in bytes {
+            let _ = write!(hex, "{byte:02x}");
+        }
+        Self(hex)
+    }
+
+    /// The token's wire form, for placing into a child process environment.
+    ///
+    /// This is the only sanctioned read: every other use (logging, persisting,
+    /// serializing, sending to the model) leaks the secret.
+    pub fn expose_for_child_process_env(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ThreadToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ThreadToken(<redacted>)")
+    }
+}
 
 /// Environment variables that model-reachable child processes must not inherit.
 pub const NON_INHERITABLE_ENV_VARS: &[&str] = &[

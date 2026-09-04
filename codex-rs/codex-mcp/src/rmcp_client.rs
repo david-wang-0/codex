@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -63,6 +64,7 @@ use codex_protocol::protocol::McpStartupUpdateEvent;
 use codex_protocol::shell_environment::CODEX_PARENT_THREAD_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_THREAD_TOKEN_ENV_VAR;
 use codex_rmcp_client::ExecutorStdioServerLauncher;
 use codex_rmcp_client::LocalStdioServerLauncher;
 use codex_rmcp_client::McpOAuthRefreshMode;
@@ -1063,19 +1065,40 @@ fn mcp_server_info_from_implementation(
     }
 }
 
-/// Overlays the owning thread identity onto a stdio MCP server's configured env.
+/// The Codex state directory a session runs under.
 ///
-/// The reserved identity variables are inserted after the configured `env`
-/// map, so static MCP configuration cannot override them. A context without an
-/// identity leaves the configured env untouched.
-fn stdio_env_with_session_identity(
+/// `codex_rmcp_client`'s stdio env allowlist does not forward this, so a server
+/// that has to find Codex's own state would otherwise fall back to the default
+/// home and reach a different Codex.
+const CODEX_HOME_ENV_VAR: &str = "CODEX_HOME";
+
+/// Overlays session-owned values onto a stdio MCP server's configured env.
+///
+/// The reserved identity variables are inserted after the configured `env` map,
+/// so static MCP configuration cannot override them. `CODEX_HOME` is a path
+/// rather than a claim about who is calling, so it is only a default: a
+/// configured value for it wins. A context with neither an identity nor a
+/// `CODEX_HOME` leaves the configured env untouched.
+fn stdio_env_with_session_overlay(
     env: Option<HashMap<OsString, OsString>>,
     session_identity: Option<&McpSessionIdentity>,
+    codex_home: Option<&Path>,
 ) -> Option<HashMap<OsString, OsString>> {
-    let Some(identity) = session_identity else {
+    if session_identity.is_none() && codex_home.is_none() {
         return env;
-    };
+    }
     let mut env = env.unwrap_or_default();
+    if let Some(codex_home) = codex_home
+        && !contains_env_var(&env, CODEX_HOME_ENV_VAR)
+    {
+        env.insert(
+            OsString::from(CODEX_HOME_ENV_VAR),
+            codex_home.as_os_str().to_os_string(),
+        );
+    }
+    let Some(identity) = session_identity else {
+        return Some(env);
+    };
     let reserved = [
         (
             CODEX_THREAD_ID_ENV_VAR,
@@ -1091,6 +1114,15 @@ fn stdio_env_with_session_identity(
             CODEX_SESSION_ID_ENV_VAR,
             Some(identity.session_id.to_string()),
         ),
+        (
+            CODEX_THREAD_TOKEN_ENV_VAR,
+            Some(
+                identity
+                    .thread_token
+                    .expose_for_child_process_env()
+                    .to_string(),
+            ),
+        ),
     ];
     for (name, value) in reserved {
         // Reserved names are runtime metadata: drop any configured value even
@@ -1103,6 +1135,16 @@ fn stdio_env_with_session_identity(
         }
     }
     Some(env)
+}
+
+/// Whether `env` already binds `name`, matching the platform's env-var casing.
+fn contains_env_var(env: &HashMap<OsString, OsString>, name: &str) -> bool {
+    if cfg!(windows) {
+        env.keys()
+            .any(|existing| existing.to_string_lossy().eq_ignore_ascii_case(name))
+    } else {
+        env.contains_key(OsStr::new(name))
+    }
 }
 
 struct StartServerTaskParams {
@@ -1161,13 +1203,14 @@ pub(crate) async fn make_rmcp_client(
         } => {
             let command_os: OsString = command.into();
             let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
-            let env_os = stdio_env_with_session_identity(
+            let env_os = stdio_env_with_session_overlay(
                 env.map(|env| {
                     env.into_iter()
                         .map(|(key, value)| (key.into(), value.into()))
                         .collect::<HashMap<_, _>>()
                 }),
                 runtime_context.session_identity(),
+                runtime_context.codex_home(),
             );
             let launcher = if is_local_environment {
                 // TODO(starr): Unify local stdio MCP launch with
@@ -1275,10 +1318,12 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_protocol::mcp::MCP_APP_UI_EXTENSION_ID;
     use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
+    use codex_protocol::shell_environment::ThreadToken;
     use pretty_assertions::assert_eq;
     use rmcp::model::JsonObject;
     use rmcp::model::MetaObject;
     use rmcp::transport::auth::AuthError;
+    use std::path::PathBuf;
 
     fn os_env(pairs: &[(&str, &str)]) -> HashMap<OsString, OsString> {
         pairs
@@ -1287,18 +1332,31 @@ mod tests {
             .collect()
     }
 
+    fn identity(thread_id: ThreadId, parent_thread_id: Option<ThreadId>) -> McpSessionIdentity {
+        let root_thread_id = parent_thread_id.unwrap_or(thread_id);
+        McpSessionIdentity {
+            thread_id,
+            parent_thread_id,
+            session_id: SessionId::from(root_thread_id),
+            thread_token: ThreadToken::generate(),
+        }
+    }
+
     #[test]
-    fn stdio_env_without_session_identity_is_unchanged() {
+    fn stdio_env_without_session_overlay_is_unchanged() {
         let configured = os_env(&[("MCP_TEST_VALUE", "configured")]);
 
         assert_eq!(
-            stdio_env_with_session_identity(/*env*/ None, /*session_identity*/ None),
+            stdio_env_with_session_overlay(
+                /*env*/ None, /*session_identity*/ None, /*codex_home*/ None
+            ),
             None
         );
         assert_eq!(
-            stdio_env_with_session_identity(
+            stdio_env_with_session_overlay(
                 Some(configured.clone()),
-                /*session_identity*/ None
+                /*session_identity*/ None,
+                /*codex_home*/ None
             ),
             Some(configured)
         );
@@ -1313,42 +1371,88 @@ mod tests {
             (CODEX_THREAD_ID_ENV_VAR, "spoofed-thread"),
             (CODEX_PARENT_THREAD_ID_ENV_VAR, "spoofed-parent"),
             (CODEX_SESSION_ID_ENV_VAR, "spoofed-session"),
+            (CODEX_THREAD_TOKEN_ENV_VAR, "spoofed-token"),
         ]);
 
-        let root = McpSessionIdentity {
-            thread_id: root_thread_id,
-            parent_thread_id: None,
-            session_id: SessionId::from(root_thread_id),
-        };
-        let child = McpSessionIdentity {
-            thread_id: child_thread_id,
-            parent_thread_id: Some(root_thread_id),
-            session_id: SessionId::from(root_thread_id),
-        };
+        let root = identity(root_thread_id, /*parent_thread_id*/ None);
+        let child = identity(child_thread_id, Some(root_thread_id));
+        let root_token = root.thread_token.expose_for_child_process_env();
+        let child_token = child.thread_token.expose_for_child_process_env();
+        // Each thread carries its own secret, not the root's.
+        assert_ne!(root_token, child_token);
 
         assert_eq!(
-            stdio_env_with_session_identity(/*env*/ None, Some(&root)),
+            stdio_env_with_session_overlay(
+                /*env*/ None,
+                Some(&root),
+                /*codex_home*/ None
+            ),
             Some(os_env(&[
                 (CODEX_THREAD_ID_ENV_VAR, &root_thread_id.to_string()),
                 (CODEX_SESSION_ID_ENV_VAR, &root_thread_id.to_string()),
+                (CODEX_THREAD_TOKEN_ENV_VAR, root_token),
             ]))
         );
         assert_eq!(
-            stdio_env_with_session_identity(Some(configured.clone()), Some(&root)),
+            stdio_env_with_session_overlay(
+                Some(configured.clone()),
+                Some(&root),
+                /*codex_home*/ None
+            ),
             Some(os_env(&[
                 ("MCP_TEST_VALUE", "configured"),
                 (CODEX_THREAD_ID_ENV_VAR, &root_thread_id.to_string()),
                 (CODEX_SESSION_ID_ENV_VAR, &root_thread_id.to_string()),
+                (CODEX_THREAD_TOKEN_ENV_VAR, root_token),
             ]))
         );
         assert_eq!(
-            stdio_env_with_session_identity(Some(configured), Some(&child)),
+            stdio_env_with_session_overlay(
+                Some(configured),
+                Some(&child),
+                /*codex_home*/ None
+            ),
             Some(os_env(&[
                 ("MCP_TEST_VALUE", "configured"),
                 (CODEX_THREAD_ID_ENV_VAR, &child_thread_id.to_string()),
                 (CODEX_PARENT_THREAD_ID_ENV_VAR, &root_thread_id.to_string()),
                 (CODEX_SESSION_ID_ENV_VAR, &root_thread_id.to_string()),
+                (CODEX_THREAD_TOKEN_ENV_VAR, child_token),
             ]))
+        );
+    }
+
+    #[test]
+    fn stdio_env_codex_home_is_a_default_that_configured_env_can_override() {
+        let codex_home = PathBuf::from("/nondefault/codex-home");
+
+        assert_eq!(
+            stdio_env_with_session_overlay(
+                /*env*/ None,
+                /*session_identity*/ None,
+                Some(codex_home.as_path())
+            ),
+            Some(os_env(&[(CODEX_HOME_ENV_VAR, "/nondefault/codex-home")]))
+        );
+        assert_eq!(
+            stdio_env_with_session_overlay(
+                Some(os_env(&[("MCP_TEST_VALUE", "configured")])),
+                /*session_identity*/ None,
+                Some(codex_home.as_path())
+            ),
+            Some(os_env(&[
+                ("MCP_TEST_VALUE", "configured"),
+                (CODEX_HOME_ENV_VAR, "/nondefault/codex-home"),
+            ]))
+        );
+        // Unlike the identity, CODEX_HOME is a path: configuration still wins.
+        assert_eq!(
+            stdio_env_with_session_overlay(
+                Some(os_env(&[(CODEX_HOME_ENV_VAR, "/configured/codex-home")])),
+                /*session_identity*/ None,
+                Some(codex_home.as_path())
+            ),
+            Some(os_env(&[(CODEX_HOME_ENV_VAR, "/configured/codex-home")]))
         );
     }
 

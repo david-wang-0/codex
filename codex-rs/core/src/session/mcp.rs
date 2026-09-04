@@ -163,7 +163,8 @@ impl Session {
                 })
                 .collect(),
         )
-        .with_session_identity(self.mcp_session_identity(parent_thread_id));
+        .with_session_identity(self.mcp_session_identity(parent_thread_id))
+        .with_codex_home(config.codex_home.to_path_buf());
         (mcp_config, runtime_context)
     }
 

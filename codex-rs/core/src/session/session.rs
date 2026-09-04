@@ -31,6 +31,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_protocol::shell_environment::ThreadToken;
 use codex_skills::SkillError;
 use codex_utils_git_discovery::GitRootDiscovery;
 use std::sync::OnceLock;
@@ -41,6 +42,9 @@ use tokio::sync::Semaphore;
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
 pub(crate) struct Session {
     pub(crate) thread_id: ThreadId,
+    /// Secret exported to the processes this thread launches. Never persisted,
+    /// logged, serialized or sent to the model.
+    pub(crate) thread_token: ThreadToken,
     pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
@@ -602,6 +606,12 @@ impl Session {
         self.services.agent_control.session_id()
     }
 
+    /// Returns this thread's secret. A native subagent has its own token, not
+    /// its parent's.
+    pub(crate) fn thread_token(&self) -> &ThreadToken {
+        &self.thread_token
+    }
+
     pub(crate) async fn originator(&self) -> String {
         let state = self.state.lock().await;
         state.session_configuration.originator.clone()
@@ -793,6 +803,8 @@ impl Session {
                 SessionId::from(thread_id)
             }
         });
+        // One secret per thread: a native subagent never reuses the root's.
+        let thread_token = ThreadToken::generate();
         let initial_auto_compact_window_ids = AutoCompactWindowIds::new_initial();
         let restore_child_window = matches!(&initial_history, InitialHistory::Forked(_))
             && session_configuration.session_source.is_non_root_agent()
@@ -1335,6 +1347,7 @@ impl Session {
                     thread_id,
                     parent_thread_id,
                     session_id,
+                    thread_token: thread_token.clone(),
                 },
                 Arc::new(CoreHookMcpExecutor {
                     runtime: Arc::clone(&mcp_runtime),
@@ -1491,6 +1504,7 @@ impl Session {
             let (mcp_prewarm_tx, mcp_prewarm_rx) = async_channel::bounded(1);
             let sess = Arc::new(Session {
                 thread_id,
+                thread_token,
                 installation_id,
                 tx_event: tx_event.clone(),
                 agent_status,

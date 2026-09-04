@@ -4064,6 +4064,7 @@ dependencies = [
  "landlock",
  "pretty_assertions",
  "quick-xml 0.41.0",
+ "rand 0.9.3",
  "schemars 0.8.22",
  "seccompiler",
  "serde",

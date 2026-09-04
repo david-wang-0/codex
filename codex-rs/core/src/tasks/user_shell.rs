@@ -16,6 +16,7 @@ use crate::exec::execute_exec_request;
 use crate::exec_env::create_env;
 use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_session_id_env;
+use crate::exec_env::inject_thread_token_env;
 use crate::sandboxing::ExecRequest;
 use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
@@ -167,6 +168,7 @@ pub(crate) async fn execute_user_shell_command(
     let shell_environment_policy = turn_environment.shell_environment_policy();
     let mut exec_env_map = create_env(shell_environment_policy, Some(session.thread_id));
     inject_session_id_env(&mut exec_env_map, session.session_id());
+    inject_thread_token_env(&mut exec_env_map, session.thread_token());
     inject_apply_patch_env(&mut exec_env_map, &turn_context.config.features);
     if exec_env_map.contains_key(PROXY_ACTIVE_ENV_KEY) {
         strip_managed_proxy_env(&mut exec_env_map);

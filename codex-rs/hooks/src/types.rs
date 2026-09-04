@@ -10,6 +10,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::shell_environment::CODEX_PARENT_THREAD_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_THREAD_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::ThreadToken;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::future::BoxFuture;
 use serde::Serialize;
@@ -21,8 +23,9 @@ pub type HookFn = Arc<dyn for<'a> Fn(&'a HookPayload) -> BoxFuture<'a, HookResul
 ///
 /// Hook child processes (command hooks and legacy `notify`) receive these IDs
 /// as reserved environment variables (`CODEX_THREAD_ID`,
-/// `CODEX_PARENT_THREAD_ID`, `CODEX_SESSION_ID`), applied after any
-/// handler-configured environment so hook configuration cannot spoof them.
+/// `CODEX_PARENT_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_THREAD_TOKEN`), applied
+/// after any handler-configured environment so hook configuration cannot spoof
+/// them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HookSessionIdentity {
     /// The thread that owns the hooks.
@@ -31,21 +34,27 @@ pub struct HookSessionIdentity {
     pub parent_thread_id: Option<ThreadId>,
     /// The identity shared by the root thread and all of its descendants.
     pub session_id: SessionId,
+    /// This thread's secret, proving to a local service that a hook process
+    /// was launched by this thread.
+    pub thread_token: ThreadToken,
 }
 
 impl HookSessionIdentity {
-    /// Identity of a root thread, whose session ID is its own thread ID.
+    /// Identity of a root thread, whose session ID is its own thread ID, with a
+    /// freshly generated thread token.
     pub fn root(thread_id: ThreadId) -> Self {
         Self {
             thread_id,
             parent_thread_id: None,
             session_id: SessionId::from(thread_id),
+            thread_token: ThreadToken::generate(),
         }
     }
 
     /// Reserved environment variables exported to hook processes.
     ///
     /// `CODEX_PARENT_THREAD_ID` is only present for a child thread.
+    /// `CODEX_THREAD_TOKEN` carries the secret and must not be logged.
     pub fn reserved_environment(&self) -> Vec<(OsString, OsString)> {
         let mut reserved = vec![(
             OsString::from(CODEX_THREAD_ID_ENV_VAR),
@@ -60,6 +69,10 @@ impl HookSessionIdentity {
         reserved.push((
             OsString::from(CODEX_SESSION_ID_ENV_VAR),
             OsString::from(self.session_id.to_string()),
+        ));
+        reserved.push((
+            OsString::from(CODEX_THREAD_TOKEN_ENV_VAR),
+            OsString::from(self.thread_token.expose_for_child_process_env()),
         ));
         reserved
     }
@@ -82,6 +95,7 @@ pub(crate) fn is_reserved_identity_env_var(name: &OsStr) -> bool {
         CODEX_THREAD_ID_ENV_VAR,
         CODEX_PARENT_THREAD_ID_ENV_VAR,
         CODEX_SESSION_ID_ENV_VAR,
+        CODEX_THREAD_TOKEN_ENV_VAR,
     ]
     .iter()
     .any(|reserved| {

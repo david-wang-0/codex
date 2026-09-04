@@ -6,6 +6,7 @@
 //! [`crate::connection_manager`].
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -33,6 +34,7 @@ use codex_protocol::mcp::McpResourceOriginCheckpoint;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::shell_environment::ThreadToken;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::with_http_headers_helper;
 use codex_utils_path_uri::PathUri;
@@ -667,9 +669,10 @@ pub struct SandboxState {
 
 /// Identity of the Codex thread that owns an MCP runtime.
 ///
-/// Stdio MCP servers receive these IDs as reserved environment variables
-/// (`CODEX_THREAD_ID`, `CODEX_PARENT_THREAD_ID`, `CODEX_SESSION_ID`) before the
-/// first MCP request so they can bind to their owning thread.
+/// Stdio MCP servers receive these values as reserved environment variables
+/// (`CODEX_THREAD_ID`, `CODEX_PARENT_THREAD_ID`, `CODEX_SESSION_ID`,
+/// `CODEX_THREAD_TOKEN`) before the first MCP request so they can bind to their
+/// owning thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpSessionIdentity {
     /// The thread that owns the runtime.
@@ -678,6 +681,9 @@ pub struct McpSessionIdentity {
     pub parent_thread_id: Option<ThreadId>,
     /// The identity shared by the root thread and all of its descendants.
     pub session_id: SessionId,
+    /// This thread's secret, proving to a local service that an MCP server was
+    /// launched by this thread.
+    pub thread_token: ThreadToken,
 }
 
 /// Runtime context used when resolving per-server MCP environments.
@@ -691,6 +697,7 @@ pub struct McpRuntimeContext {
     local_process_cwd: PathBuf,
     local_http_client: Arc<dyn HttpClient>,
     session_identity: Option<McpSessionIdentity>,
+    codex_home: Option<PathBuf>,
 }
 
 /// Applies the local HTTP headers helper configured for an MCP server.
@@ -736,6 +743,7 @@ impl McpRuntimeContext {
             local_process_cwd,
             local_http_client,
             session_identity: None,
+            codex_home: None,
         }
     }
 
@@ -758,6 +766,21 @@ impl McpRuntimeContext {
 
     pub(crate) fn session_identity(&self) -> Option<&McpSessionIdentity> {
         self.session_identity.as_ref()
+    }
+
+    /// Records the effective `CODEX_HOME` this session runs under.
+    ///
+    /// Codex's stdio env allowlist omits `CODEX_HOME`, so without this a server
+    /// that has to locate Codex's own state falls back to the default home and
+    /// talks to the wrong Codex. Unlike the identity this is a path, not a
+    /// claim, so a server's configured `env` may still override it.
+    pub fn with_codex_home(mut self, codex_home: PathBuf) -> Self {
+        self.codex_home = Some(codex_home);
+        self
+    }
+
+    pub(crate) fn codex_home(&self) -> Option<&Path> {
+        self.codex_home.as_deref()
     }
 
     pub(crate) fn local_process_cwd(&self) -> PathBuf {

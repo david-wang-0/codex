@@ -12,6 +12,8 @@ use std::collections::HashMap;
 
 pub use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
 pub use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
+pub use codex_protocol::shell_environment::CODEX_THREAD_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::ThreadToken;
 
 /// Informational name of the active permission profile. Child processes can
 /// overwrite this value, so it must not be treated as proof of enforcement.
@@ -38,6 +40,26 @@ pub fn create_env(
 /// Exposes the shared root-session identity to model-reachable shell commands.
 pub(crate) fn inject_session_id_env(env: &mut HashMap<String, String>, session_id: SessionId) {
     env.insert(CODEX_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
+}
+
+/// Exposes the owning thread's secret to model-reachable shell commands.
+///
+/// Apply this after the shell environment policy: the policy's default
+/// `*TOKEN*` exclude would otherwise drop the variable, and a configured
+/// override must not be able to spoof it. The shell environment is not echoed
+/// into the model transcript or persisted to a rollout, so the value only
+/// reaches processes that the command itself starts.
+pub(crate) fn inject_thread_token_env(
+    env: &mut HashMap<String, String>,
+    thread_token: &ThreadToken,
+) {
+    if cfg!(windows) {
+        env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_THREAD_TOKEN_ENV_VAR));
+    }
+    env.insert(
+        CODEX_THREAD_TOKEN_ENV_VAR.to_string(),
+        thread_token.expose_for_child_process_env().to_string(),
+    );
 }
 
 /// Injects the selected named permission profile into a shell tool's environment.

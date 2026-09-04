@@ -86,6 +86,7 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::shell_environment::CODEX_PARENT_THREAD_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_THREAD_TOKEN_ENV_VAR;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::cargo_bin;
 use codex_utils_path_uri::PathUri;
@@ -1073,13 +1074,26 @@ const IDENTITY_ENV_VARS: [&str; 3] = [
     CODEX_SESSION_ID_ENV_VAR,
 ];
 
+/// The state directory a stdio MCP server should bind to. Not part of the
+/// identity: `CODEX_HOME` is a path a server config may still override.
+const CODEX_HOME_ENV_VAR: &str = "CODEX_HOME";
+
 /// Returns each identity variable as the running stdio echo tool sees it.
 async fn echoed_identity_env(
     codex: &CodexThread,
     server_name: &str,
 ) -> anyhow::Result<BTreeMap<String, Option<String>>> {
+    echoed_env(codex, server_name, &IDENTITY_ENV_VARS).await
+}
+
+/// Returns each requested variable as the running stdio echo tool sees it.
+async fn echoed_env(
+    codex: &CodexThread,
+    server_name: &str,
+    env_vars: &[&str],
+) -> anyhow::Result<BTreeMap<String, Option<String>>> {
     let mut echoed = BTreeMap::new();
-    for env_var in IDENTITY_ENV_VARS {
+    for env_var in env_vars {
         let result = codex
             .call_mcp_tool(
                 server_name,
@@ -1127,6 +1141,10 @@ async fn stdio_server_receives_owning_thread_identity_env() -> anyhow::Result<()
                             "spoofed".to_string(),
                         ),
                         (CODEX_SESSION_ID_ENV_VAR.to_string(), "spoofed".to_string()),
+                        (
+                            CODEX_THREAD_TOKEN_ENV_VAR.to_string(),
+                            "spoofed".to_string(),
+                        ),
                     ])),
                     Vec::new(),
                 ),
@@ -1186,13 +1204,147 @@ async fn stdio_server_receives_owning_thread_identity_env() -> anyhow::Result<()
             (CODEX_THREAD_ID_ENV_VAR.to_string(), Some(child_thread_id)),
             (
                 CODEX_PARENT_THREAD_ID_ENV_VAR.to_string(),
-                Some(root_thread_id)
+                Some(root_thread_id.clone())
             ),
-            (CODEX_SESSION_ID_ENV_VAR.to_string(), Some(root_session_id)),
+            (
+                CODEX_SESSION_ID_ENV_VAR.to_string(),
+                Some(root_session_id.clone())
+            ),
         ])
     );
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdio_server_receives_thread_token_and_codex_home_env() -> anyhow::Result<()> {
+    // TODO(anp): Remove after packaging a Windows stdio test server for Wine exec.
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let server_name = "rmcp_thread_token";
+    let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_config(move |config| {
+            insert_mcp_server(
+                config,
+                server_name,
+                stdio_transport(
+                    rmcp_test_server_bin,
+                    // Static configuration must not be able to spoof the token.
+                    Some(HashMap::from([(
+                        CODEX_THREAD_TOKEN_ENV_VAR.to_string(),
+                        "spoofed".to_string(),
+                    )])),
+                    Vec::new(),
+                ),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
+
+    let reserved = [CODEX_THREAD_TOKEN_ENV_VAR, CODEX_HOME_ENV_VAR];
+    let root_env = echoed_env(&fixture.codex, server_name, &reserved).await?;
+    let root_token = root_env
+        .get(CODEX_THREAD_TOKEN_ENV_VAR)
+        .cloned()
+        .flatten()
+        .context("root thread token reaches the MCP child")?;
+    assert_ne!(root_token, "spoofed");
+    assert_eq!(root_token.len(), 64, "token: {root_token}");
+    assert!(
+        root_token
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "token is not lowercase hex: {root_token}"
+    );
+    // Codex's stdio env allowlist omits CODEX_HOME, so without the overlay the
+    // server would fall back to the default home instead of this fixture's.
+    let codex_home = fixture.codex_home_path().to_path_buf();
+    assert_eq!(
+        root_env.get(CODEX_HOME_ENV_VAR).cloned().flatten(),
+        Some(codex_home.to_string_lossy().into_owned())
+    );
+
+    let child = fixture
+        .thread_manager
+        .spawn_internal_session(
+            fixture.session_configured.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::Internal(InternalSessionSource::Guardian)),
+                environments: Some(
+                    fixture
+                        .codex
+                        .config_snapshot()
+                        .await
+                        .environments
+                        .environments,
+                ),
+                ..StartThreadOptions::new(fixture.config.clone())
+            },
+        )
+        .await?;
+    wait_for_mcp_server(&child.thread, server_name).await?;
+
+    let child_env = echoed_env(&child.thread, server_name, &reserved).await?;
+    let child_token = child_env
+        .get(CODEX_THREAD_TOKEN_ENV_VAR)
+        .cloned()
+        .flatten()
+        .context("child thread token reaches the MCP child")?;
+    // The token is per thread: a native subagent does not inherit the root's.
+    assert_ne!(child_token, root_token);
+    assert_ne!(child_token, "spoofed");
+    assert_eq!(
+        child_env.get(CODEX_HOME_ENV_VAR).cloned().flatten(),
+        Some(codex_home.to_string_lossy().into_owned())
+    );
+
+    // The token is runtime-only: it must not reach the protocol or the disk.
+    let session_configured = serde_json::to_string(&fixture.session_configured)?;
+    for token in [&root_token, &child_token] {
+        assert!(
+            !session_configured.contains(token.as_str()),
+            "thread token leaked into SessionConfiguredEvent"
+        );
+        assert_eq!(
+            files_containing(&codex_home, token)?,
+            Vec::<PathBuf>::new(),
+            "thread token was written under CODEX_HOME"
+        );
+    }
+
+    Ok(())
+}
+
+/// Returns every file under `root` whose bytes contain `needle`.
+fn files_containing(root: &Path, needle: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in walkdir::WalkDir::new(root) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(contents) = fs::read(entry.path()) else {
+            continue;
+        };
+        if contents
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+        {
+            found.push(entry.path().to_path_buf());
+        }
+    }
+    Ok(found)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

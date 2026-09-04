@@ -171,6 +171,7 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::shell_environment::ThreadToken;
 use codex_rmcp_client::ElicitationAction;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
@@ -6601,6 +6602,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
 
     let session = Session {
         thread_id,
+        thread_token: ThreadToken::generate(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -8901,6 +8903,7 @@ where
 
     let session = Arc::new(Session {
         thread_id,
+        thread_token: ThreadToken::generate(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,

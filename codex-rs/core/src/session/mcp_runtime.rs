@@ -34,7 +34,7 @@ pub(super) struct McpDesiredState {
 
 impl Session {
     /// Identity exported to this session's MCP servers: current thread, native
-    /// parent (if any), and the shared root session.
+    /// parent (if any), the shared root session, and this thread's secret.
     pub(super) fn mcp_session_identity(
         &self,
         parent_thread_id: Option<ThreadId>,
@@ -43,6 +43,7 @@ impl Session {
             thread_id: self.thread_id(),
             parent_thread_id,
             session_id: self.session_id(),
+            thread_token: self.thread_token().clone(),
         }
     }
 
@@ -397,7 +398,8 @@ impl Session {
                 })
                 .collect(),
         )
-        .with_session_identity(desired.session_identity.clone());
+        .with_session_identity(desired.session_identity.clone())
+        .with_codex_home(desired.config.codex_home.to_path_buf());
         McpRuntimeInput {
             startup_policy: if matches!(desired.session_source, SessionSource::SubAgent(_)) {
                 McpStartupPolicy::LazyWhenCached

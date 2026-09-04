@@ -22,6 +22,8 @@ use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VA
 use codex_protocol::shell_environment::CODEX_PARENT_THREAD_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::CODEX_THREAD_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::ThreadToken;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -303,6 +305,15 @@ async fn command_hook_receives_reserved_thread_identity_over_ambient_and_handler
         exported(CODEX_SESSION_ID_ENV_VAR),
         Some(identity.session_id.to_string())
     );
+    assert_eq!(
+        exported(CODEX_THREAD_TOKEN_ENV_VAR),
+        Some(
+            identity
+                .thread_token
+                .expose_for_child_process_env()
+                .to_string()
+        )
+    );
 }
 
 #[test]
@@ -316,6 +327,10 @@ fn build_command_applies_reserved_identity_after_snapshot_and_handler_env() {
             "handler".to_string(),
         ),
         (CODEX_SESSION_ID_ENV_VAR.to_string(), "handler".to_string()),
+        (
+            CODEX_THREAD_TOKEN_ENV_VAR.to_string(),
+            "handler".to_string(),
+        ),
         ("CODEX_HOOK_SAFE_ENV".to_string(), "visible".to_string()),
     ]);
     let command = build_command(
@@ -342,6 +357,12 @@ fn build_command_applies_reserved_identity_after_snapshot_and_handler_env() {
     assert_eq!(
         configured_environment_value(&command, CODEX_SESSION_ID_ENV_VAR),
         Some(Some(OsString::from(identity.session_id.to_string())))
+    );
+    assert_eq!(
+        configured_environment_value(&command, CODEX_THREAD_TOKEN_ENV_VAR),
+        Some(Some(OsString::from(
+            identity.thread_token.expose_for_child_process_env()
+        )))
     );
     assert_eq!(
         configured_environment_value(&command, "CODEX_HOOK_SAFE_ENV"),
@@ -376,6 +397,10 @@ fn root_identity_exports_no_parent_and_drops_stale_snapshot_parent() {
                 OsString::from(CODEX_SESSION_ID_ENV_VAR),
                 OsString::from(thread_id.to_string()),
             ),
+            (
+                OsString::from(CODEX_THREAD_TOKEN_ENV_VAR),
+                OsString::from(identity.thread_token.expose_for_child_process_env()),
+            ),
         ]
     );
     let command = build_command(
@@ -404,6 +429,19 @@ fn root_identity_exports_no_parent_and_drops_stale_snapshot_parent() {
         configured_environment_value(&command, CODEX_SESSION_ID_ENV_VAR),
         Some(Some(OsString::from(thread_id.to_string())))
     );
+    assert_eq!(
+        configured_environment_value(&command, CODEX_THREAD_TOKEN_ENV_VAR),
+        Some(Some(OsString::from(
+            identity.thread_token.expose_for_child_process_env()
+        )))
+    );
+    // The secret must not leak through a hook identity's own Debug output.
+    let rendered = format!("{identity:?}");
+    assert!(rendered.contains("ThreadToken(<redacted>)"), "{rendered}");
+    assert!(
+        !rendered.contains(identity.thread_token.expose_for_child_process_env()),
+        "{rendered}"
+    );
 }
 
 fn child_identity() -> HookSessionIdentity {
@@ -412,6 +450,7 @@ fn child_identity() -> HookSessionIdentity {
         thread_id: ThreadId::new(),
         parent_thread_id: Some(root_thread_id),
         session_id: SessionId::from(root_thread_id),
+        thread_token: ThreadToken::generate(),
     }
 }
 
@@ -428,6 +467,10 @@ fn spoofed_identity_env() -> Vec<(OsString, OsString)> {
         (
             OsString::from(CODEX_SESSION_ID_ENV_VAR),
             OsString::from("spoofed-session"),
+        ),
+        (
+            OsString::from(CODEX_THREAD_TOKEN_ENV_VAR),
+            OsString::from("spoofed-token"),
         ),
     ]
 }
