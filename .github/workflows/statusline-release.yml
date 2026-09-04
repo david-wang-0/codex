@@ -89,7 +89,7 @@ jobs:
           binary_name="codex-${target}"
           archive="${binary_name}.tar.gz"
           checksum="${archive}.sha256"
-          binary="target/release/codex"
+          binary="${CARGO_TARGET_DIR}/release/codex"
 
           rm -rf dist
           mkdir -p dist/stage
