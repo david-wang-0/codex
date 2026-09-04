@@ -140,6 +140,7 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
+                    eager_startup: false,
                     default_tools_approval_mode: None,
                     enabled_tools: None,
                     disabled_tools: None,

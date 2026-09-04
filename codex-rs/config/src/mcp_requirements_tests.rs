@@ -22,6 +22,7 @@ fn stdio_server(command: &str, args: &[&str]) -> McpServerConfig {
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
+        eager_startup: false,
         default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,

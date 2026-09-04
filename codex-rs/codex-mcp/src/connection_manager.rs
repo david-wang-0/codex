@@ -556,7 +556,10 @@ impl McpConnectionSet {
                 protocol_mode,
                 catalog_item_limit,
             );
+            // `eager_startup` opts a server out of deferred startup so it observes
+            // every thread (including native subagents) before any tool call.
             let defer_startup = allow_deferred_startup
+                && !configured_config.eager_startup
                 && !tool_plugin_provenance.is_selected_plugin_mcp_server(&server_name)
                 && async_managed_client
                     .tool_catalog_cache_context

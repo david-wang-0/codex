@@ -1017,3 +1017,131 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
     responses_server.verify().await;
     Ok(())
 }
+/// A server configured with `eager_startup = true` starts as soon as a native
+/// subagent thread publishes its MCP runtime, even though the subagent policy
+/// is `LazyWhenCached` and the tool catalog cache is already primed. Without
+/// the flag such a thread leaves the server dormant until its first tool call
+/// (see `cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents`), so a
+/// presence or delivery server would never learn the subagent exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn eager_startup_stdio_mcp_starts_for_subagents_before_any_tool_call() -> anyhow::Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let responses_server = responses::start_mock_server().await;
+    let command = remote_aware_stdio_server_bin()?;
+    let environment_id = remote_aware_environment_id();
+    let fixture = test_codex()
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::Disabled)
+                .expect("test config should allow disabled permissions");
+            let barrier_file = config.cwd.join("allow-initialize");
+            let pid_file = config.cwd.join("mcp.pid");
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                SERVER_NAME.to_string(),
+                serde_json::from_value(json!({
+                    "command": command,
+                    "environment_id": environment_id,
+                    "cwd": config.cwd,
+                    "env": {
+                        "MCP_TEST_INITIALIZE_BARRIER_FILE": barrier_file,
+                        "MCP_TEST_DYNAMIC_SERVER_METADATA": "1",
+                        "MCP_TEST_PID_FILE": pid_file,
+                    },
+                    "enabled_tools": ["cwd", "echo"],
+                    "startup_timeout_sec": 10,
+                    "eager_startup": true,
+                }))
+                .expect("test MCP server configuration"),
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test MCP server configuration");
+        })
+        .build_with_auto_env(&responses_server)
+        .await?;
+    let fs = fixture.fs();
+    let barrier_file = PathUri::from_host_native_path(fixture.config.cwd.join("allow-initialize"))?;
+    let pid_file = PathUri::from_host_native_path(fixture.config.cwd.join("mcp.pid"))?;
+
+    // Prime the tool catalog cache with the root thread, which is eager anyway.
+    let cold_response = mount_sse_once(
+        &responses_server,
+        responses::sse(vec![
+            responses::ev_response_created("cold"),
+            responses::ev_assistant_message("cold-message", "done"),
+            responses::ev_completed("cold"),
+        ]),
+    )
+    .await;
+    fixture
+        .codex
+        .start_or_steer_turn(user_turn("use the echo tool"))
+        .await?;
+    let root_pid = wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await?;
+    fs.write_file(
+        &barrier_file,
+        b"ready".to_vec(),
+        Default::default(),
+        /*sandbox*/ None,
+    )
+    .await?;
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let root_process = process_label(&root_pid);
+    assert_definition(
+        &cold_response,
+        &format!("Use the tools from {root_process}."),
+        &format!("Echo from {root_process}."),
+    );
+
+    // A native subagent with a primed cache would normally keep the server
+    // dormant; the flag makes it start at spawn, before any turn or tool call.
+    let NewThread {
+        thread: subagent_thread,
+        ..
+    } = fixture
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: fixture.session_configured.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            ..StartThreadOptions::new(fixture.config.clone())
+        })
+        .await?;
+    let subagent_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&root_pid))
+        .await
+        .context("an eager_startup server should launch for a subagent before any tool call")?;
+    assert_ne!(subagent_pid, root_pid);
+    wait_for_mcp_server(&subagent_thread, SERVER_NAME).await?;
+    let (mcp_config, _) = subagent_thread
+        .current_mcp_config_and_runtime_context()
+        .await;
+    assert_eq!(
+        subagent_thread
+            .mcp_connection_statuses(&mcp_config)
+            .await
+            .get(SERVER_NAME),
+        Some(&McpServerConnectionStatus::Connected),
+        "an eager_startup server must not stay dormant for a subagent"
+    );
+
+    subagent_thread.shutdown_and_wait().await?;
+    responses_server.verify().await;
+    Ok(())
+}

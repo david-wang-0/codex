@@ -3139,6 +3139,10 @@
           },
           "type": "array"
         },
+        "eager_startup": {
+          "default": null,
+          "type": "boolean"
+        },
         "enabled": {
           "default": null,
           "type": "boolean"

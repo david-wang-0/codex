@@ -296,6 +296,7 @@ fn insert_rmcp_test_server(
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(10)),
             tool_timeout_sec: None,
+            eager_startup: false,
             default_tools_approval_mode: Some(approval_mode),
             enabled_tools: None,
             disabled_tools: None,

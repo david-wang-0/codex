@@ -213,6 +213,13 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
 
+    /// When `true`, this server is started as soon as a thread publishes its MCP runtime,
+    /// even for native subagent threads that would otherwise leave a server with cached
+    /// tool definitions dormant until its first tool call. Use this for servers that must
+    /// observe every thread at startup (for example presence or inbound-delivery servers).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub eager_startup: bool,
+
     /// When `true`, every tool from this server is advertised as safe for parallel tool calls.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub supports_parallel_tool_calls: bool,
@@ -359,6 +366,8 @@ pub struct RawMcpServerConfig {
     #[serde(default)]
     pub required: Option<bool>,
     #[serde(default)]
+    pub eager_startup: Option<bool>,
+    #[serde(default)]
     pub supports_parallel_tool_calls: Option<bool>,
     #[serde(default)]
     pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
@@ -404,6 +413,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             tool_timeout_sec,
             enabled,
             required,
+            eager_startup,
             supports_parallel_tool_calls,
             omit_tools_from,
             default_tools_approval_mode,
@@ -499,6 +509,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             tool_timeout_sec,
             enabled: enabled.unwrap_or_else(default_enabled),
             required: required.unwrap_or_default(),
+            eager_startup: eager_startup.unwrap_or_default(),
             supports_parallel_tool_calls: supports_parallel_tool_calls.unwrap_or_default(),
             omit_tools_from,
             disabled_reason: None,

@@ -437,6 +437,28 @@ fn deserialize_server_config_with_parallel_tool_calls() {
 }
 
 #[test]
+fn deserialize_server_config_with_eager_startup() {
+    let cfg: McpServerConfig = toml::from_str(
+        r#"
+            command = "echo"
+            eager_startup = true
+        "#,
+    )
+    .expect("should deserialize eager_startup");
+    assert!(cfg.eager_startup);
+
+    let default_cfg: McpServerConfig =
+        toml::from_str(r#"command = "echo""#).expect("should deserialize without eager_startup");
+    assert!(!default_cfg.eager_startup);
+
+    let serialized = toml::to_string(&cfg).expect("should serialize MCP config");
+    assert!(serialized.contains("eager_startup = true"));
+    let round_tripped: McpServerConfig =
+        toml::from_str(&serialized).expect("should deserialize serialized MCP config");
+    assert_eq!(round_tripped, cfg);
+}
+
+#[test]
 fn serialize_round_trips_server_config_with_omitted_tool_exposure_surfaces() {
     for omitted_surfaces in [
         vec![],
@@ -566,6 +588,7 @@ fn deserialize_ignores_unknown_server_fields() {
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
+            eager_startup: false,
             default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,

@@ -41,6 +41,7 @@ fn server(url: &str) -> McpServerConfig {
         disabled_reason: None,
         startup_timeout_sec: Some(Duration::from_secs(7)),
         tool_timeout_sec: Some(Duration::from_secs(11)),
+        eager_startup: false,
         default_tools_approval_mode: Some(AppToolApproval::Prompt),
         enabled_tools: Some(vec!["read".to_string()]),
         disabled_tools: Some(vec!["write".to_string()]),

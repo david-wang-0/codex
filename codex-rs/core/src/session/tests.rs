@@ -9635,6 +9635,7 @@ async fn step_context_keeps_its_mcp_runtime_for_tools() -> anyhow::Result<()> {
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
+            eager_startup: false,
             default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
