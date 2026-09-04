@@ -1,0 +1,107 @@
+name: statusline-release
+
+on:
+  push:
+    branches:
+      - statusline-v*
+  workflow_dispatch:
+
+concurrency:
+  group: statusline-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish Linux x86_64 binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: codex-rs
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Test Claude-style status line
+        run: just test -p codex-tui claude_status_line
+
+      - name: Build Codex
+        run: cargo build --release -p codex-cli --bin codex
+
+      - name: Stage release assets
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(
+            awk '
+              /^\[workspace\.package\]$/ { in_workspace_package = 1; next }
+              in_workspace_package && /^\[/ { exit }
+              in_workspace_package && /^version = "/ {
+                gsub(/^version = "|".*$/, "")
+                print
+                exit
+              }
+            ' Cargo.toml
+          )"
+          if [[ -z "${version}" ]]; then
+            echo "Could not read workspace version from Cargo.toml"
+            exit 1
+          fi
+          short_sha="${GITHUB_SHA:0:12}"
+          tag="statusline-v${version}-${short_sha}"
+          target="x86_64-unknown-linux-gnu"
+          binary_name="codex-${target}"
+          archive="${binary_name}.tar.gz"
+          checksum="${archive}.sha256"
+          binary="target/release/codex"
+
+          rm -rf dist
+          mkdir -p dist/stage
+          staged_binary="dist/stage/${binary_name}"
+          install -m 0755 "${binary}" "${staged_binary}"
+          strip --strip-debug --strip-unneeded "${staged_binary}"
+
+          version_output="$("${staged_binary}" --version)"
+          if [[ "${version_output}" != *" ${version}" ]]; then
+            echo "Built binary version '${version_output}' does not match workspace version '${version}'"
+            exit 1
+          fi
+          if ! LC_ALL=C grep -aFq 'codex-status-right' "${staged_binary}"; then
+            echo "Built binary does not contain the Claude-style status-line marker"
+            exit 1
+          fi
+
+          tar -C dist/stage -czf "dist/${archive}" "${binary_name}"
+          (
+            cd dist
+            sha256sum "${archive}" > "${checksum}"
+          )
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
+          echo "checksum=${checksum}" >> "${GITHUB_OUTPUT}"
+          cat "dist/${checksum}"
+
+      - name: Create immutable prerelease
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          name: Codex statusline ${{ steps.release.outputs.version }} (${{ github.sha }})
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            codex-rs/dist/${{ steps.release.outputs.archive }}
+            codex-rs/dist/${{ steps.release.outputs.checksum }}
