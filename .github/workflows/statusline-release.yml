@@ -46,7 +46,7 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Test Claude-style status line
-        run: just test -p codex-tui claude_status_line
+        run: cargo nextest run --release -p codex-tui claude_status_line
 
       - name: Build Codex
         run: cargo build --release -p codex-cli --bin codex
