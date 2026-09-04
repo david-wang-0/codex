@@ -266,7 +266,14 @@ impl ChatWidget {
         &mut self,
         status_line_items: &[StatusLineItem],
     ) -> Line<'static> {
-        let context_window = self.status_line_context_window_size();
+        let context_window = self
+            .status_line_context_window_size()
+            .map(|context_window| {
+                self.config
+                    .model_auto_compact_token_limit
+                    .map_or(context_window, |limit| context_window.min(limit))
+            });
+        let current_model = self.current_model().to_string();
         let max_context_window = self
             .model_catalog
             .try_list_models()
@@ -274,9 +281,17 @@ impl ChatWidget {
             .and_then(|models| {
                 models
                     .into_iter()
-                    .find(|preset| preset.model == self.current_model())
+                    .find(|preset| preset.model == current_model)
             })
-            .and_then(|preset| preset.max_context_window);
+            .and_then(|preset| preset.max_context_window)
+            .or_else(|| {
+                codex_models_manager::bundled_models_response()
+                    .ok()?
+                    .models
+                    .into_iter()
+                    .find(|model| model.slug == current_model)?
+                    .max_context_window
+            });
         let context_used_tokens = (!self.token_usage_pending).then(|| {
             self.token_info
                 .as_ref()

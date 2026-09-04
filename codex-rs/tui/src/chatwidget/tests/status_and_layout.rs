@@ -255,6 +255,42 @@ async fn claude_status_line_separates_model_max_from_effective_context_window() 
 }
 
 #[tokio::test]
+async fn claude_status_line_uses_bundled_max_and_auto_compact_context_fallback() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("gpt-5.6-sol")).await;
+    chat.model_catalog = Arc::new(ModelCatalog::new(Vec::new()));
+    chat.config.model_context_window = Some(421_053);
+    chat.config.model_auto_compact_token_limit = Some(400_000);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+
+    let render = |chat: &mut ChatWidget| {
+        chat.claude_status_line(&[])
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+    let startup = render(&mut chat);
+    handle_token_count(
+        &mut chat,
+        Some(make_token_info(
+            /*total_tokens*/ 0, /*context_window*/ 421_053,
+        )),
+    );
+    let after_token_update = render(&mut chat);
+
+    for rendered in [startup, after_token_update] {
+        assert!(
+            rendered.contains("gpt-5.6-sol [872k, high]"),
+            "expected bundled model maximum: {rendered}"
+        );
+        assert!(
+            rendered.contains("ctx 0.0/400k"),
+            "expected auto-compact context window: {rendered}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn claude_status_line_supports_pro_and_plus_limit_signatures() {
     use crate::bottom_pane::StatusLineItem;
     use crate::chatwidget::status_surfaces::matches_claude_status_line_items;
