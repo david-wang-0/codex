@@ -17,10 +17,13 @@ jobs:
   release:
     name: Build and publish Linux x86_64 binary
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: codex-rs
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -31,6 +34,16 @@ jobs:
       - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: nextest@0.9.103
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache@0.7.5
+
+      - name: Enable sccache GitHub Actions backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Test Claude-style status line
         run: just test -p codex-tui claude_status_line
@@ -108,3 +121,8 @@ jobs:
           files: |
             codex-rs/dist/${{ steps.release.outputs.archive }}
             codex-rs/dist/${{ steps.release.outputs.checksum }}
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: sccache --show-stats || true
