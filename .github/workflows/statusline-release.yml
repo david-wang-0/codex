@@ -56,8 +56,16 @@ jobs:
           echo "SCCACHE_DIR=${CI_BUILD_ROOT}/sccache" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
-      - name: Test Claude-style status line
-        run: just test -p codex-tui claude_status_line
+      - name: Test Claude-style status line and fleet
+        run: just test -p codex-tui -E 'test(claude_status_line) | test(fleet_status)'
+
+      - name: Test mailbox process identity
+        run: |
+          just test -p codex-mcp -E 'test(stdio_env)'
+          just test -p codex-hooks -E 'test(identity)'
+          just test -p codex-protocol -E 'test(thread_token)'
+          just test -p codex-config -E 'test(deserialize_server_config_with_eager_startup)'
+          just test -p codex-core --test all -E 'test(eager_startup_stdio_mcp_starts_for_subagents_before_any_tool_call)'
 
       - name: Build Codex
         run: cargo build --release -p codex-cli --bin codex
@@ -102,10 +110,12 @@ jobs:
             echo "Built binary version '${version_output}' does not match workspace version '${version}'"
             exit 1
           fi
-          if ! LC_ALL=C grep -aFq 'codex-status-right' "${staged_binary}"; then
-            echo "Built binary does not contain the Claude-style status-line marker"
-            exit 1
-          fi
+          for marker in codex-status-right agent-fleet-status CODEX_THREAD_TOKEN eager_startup; do
+            if ! LC_ALL=C grep -aFq "${marker}" "${staged_binary}"; then
+              echo "Built binary is missing custom integration marker: ${marker}"
+              exit 1
+            fi
+          done
 
           tar -C dist/stage -czf "dist/${archive}" "${binary_name}"
           (
