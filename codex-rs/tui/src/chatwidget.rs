@@ -346,6 +346,8 @@ use self::exec_state::UnifiedExecWaitStreak;
 use self::exec_state::command_execution_command_and_parsed;
 use self::exec_state::is_standard_tool_call;
 use self::exec_state::is_unified_exec_source;
+mod fleet_status;
+use self::fleet_status::FleetStatusState;
 mod goal_status;
 use self::goal_status::GoalStatusState;
 #[cfg(test)]
@@ -778,6 +780,8 @@ pub(crate) struct ChatWidget {
     status_line_workspace_headline_last_requested_at: Option<Instant>,
     // Set after the backend reports the workspace-message feature gate is disabled.
     status_line_workspace_messages_disabled: bool,
+    // Cached host-local agent fleet segment and its bounded refresh state.
+    fleet_status: FleetStatusState,
     // Cached backend-estimated cost and bounded refresh state for the current thread.
     thread_usage: thread_usage::ThreadUsageState,
     // Current thread-goal status shown in the status line when plan mode is inactive.
@@ -1218,6 +1222,7 @@ impl ChatWidget {
             self.refresh_terminal_title();
         }
         self.refresh_status_line_if_workspace_headline_due();
+        self.refresh_fleet_status_if_due();
         self.refresh_thread_usage_if_settlement_due();
     }
 

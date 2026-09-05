@@ -105,6 +105,10 @@ impl StatusSurfaceSelections {
             .contains(&StatusLineItem::WorkspaceHeadline)
     }
 
+    fn uses_fleet_status(&self) -> bool {
+        matches_claude_status_line_items(&self.status_line_items)
+    }
+
     fn uses_thread_usage(&self) -> bool {
         self.status_line_items.iter().any(|item| {
             matches!(
@@ -220,6 +224,12 @@ impl ChatWidget {
             self.request_status_line_workspace_headline_if_due(Instant::now());
         }
 
+        if selections.uses_fleet_status() {
+            self.enable_fleet_status_for_current_thread();
+        } else {
+            self.disable_fleet_status();
+        }
+
         if selections.uses_thread_usage() {
             self.ensure_thread_usage_requested();
         } else {
@@ -333,6 +343,7 @@ impl ChatWidget {
             context_window,
             reasoning: self.reasoning_display_name(),
             context_used_tokens,
+            fleet_status: self.fleet_status.segment.clone(),
             five_hour,
             weekly,
             now_epoch_seconds,

@@ -1,6 +1,5 @@
 ---
 source: tui/src/bottom_pane/footer.rs
-assertion_line: 1572
 expression: terminal.backend()
 ---
-"  status line: ./work/… gpt-5.6-sol [1M, max]  ctx 134/258k (51%) · 5h 49% · 7d 85%  "
+"  s… gpt-5.6-sol [1M, max]  fleet 3 ⚠1 ✉2 ⇄1 · ctx 134/258k (51%) · 5h 49% · 7d 85%  "

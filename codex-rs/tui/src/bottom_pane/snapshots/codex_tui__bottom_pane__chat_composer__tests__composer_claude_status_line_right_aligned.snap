@@ -1,6 +1,5 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
-assertion_line: 5372
 expression: terminal.backend()
 ---
 "                                                                                                                                                      "
@@ -11,4 +10,4 @@ expression: terminal.backend()
 "                                                                                                                                                      "
 "                                                                                                                                                      "
 "                                                                                                                                                      "
-"  status line: ./work/codex (main)                        gpt-5.6-sol [1M, max]  ctx 134/258k (51%) · 5h 49% (↻3h0m) · 7d 85% (↻2d2h; 2 resets left)  "
+"  status line: ./work/codex (main)     gpt-5.6-sol [1M, max]  fleet 3 ⚠1 ✉2 ⇄1 · ctx 134/258k (51%) · 5h 49% (↻3h0m) · 7d 85% (↻2d2h; 2 resets left)  "

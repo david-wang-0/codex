@@ -2123,6 +2123,7 @@ mod tests {
                 context_window: Some(258_000),
                 reasoning: "max".to_string(),
                 context_used_tokens: Some(134_000),
+                fleet_status: Some("fleet 3 ⚠1 ✉2 ⇄1".to_string()),
                 five_hour: Some(ClaudeLimit {
                     label: "5h",
                     used_percent: 49,

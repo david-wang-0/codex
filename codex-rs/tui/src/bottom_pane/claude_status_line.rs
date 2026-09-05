@@ -29,6 +29,7 @@ pub(crate) struct ClaudeStatusLineData {
     pub(crate) context_window: Option<i64>,
     pub(crate) reasoning: String,
     pub(crate) context_used_tokens: Option<i64>,
+    pub(crate) fleet_status: Option<String>,
     pub(crate) five_hour: Option<ClaudeLimit>,
     pub(crate) weekly: Option<ClaudeLimit>,
     pub(crate) now_epoch_seconds: i64,
@@ -39,6 +40,14 @@ pub(super) struct ClaudeStatusLineParts {
     pub(super) left: Line<'static>,
     pub(super) right: Line<'static>,
     pub(super) compact_right: Line<'static>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FleetStatusCounts {
+    live: u64,
+    approvals: Option<u64>,
+    unread: Option<u64>,
+    active_runs: Option<u64>,
 }
 
 pub(crate) fn claude_status_line(data: ClaudeStatusLineData) -> Line<'static> {
@@ -103,6 +112,33 @@ fn right_line(data: &ClaudeStatusLineData, include_resets: bool) -> Line<'static
     )];
 
     spans.push(Span::raw("  "));
+    if let Some(fleet) = data.fleet_status.as_deref().and_then(parse_fleet_status) {
+        spans.push(Span::styled("fleet ", gray));
+        spans.push(Span::raw(fleet.live.to_string()));
+        if let Some(approvals) = fleet.approvals {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!("⚠{approvals}"),
+                Style::default().red().bold(),
+            ));
+        }
+        if let Some(unread) = fleet.unread {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!("✉{unread}"),
+                Style::default().yellow(),
+            ));
+        }
+        if let Some(active_runs) = fleet.active_runs {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!("⇄{active_runs}"),
+                Style::default().cyan(),
+            ));
+        }
+        spans.push(Span::styled(" · ", gray));
+    }
+
     spans.push(Span::styled("ctx ", gray));
     match (data.context_used_tokens, data.context_window) {
         (Some(used), Some(window)) if window > 0 => {
@@ -131,6 +167,67 @@ fn right_line(data: &ClaudeStatusLineData, include_resets: bool) -> Line<'static
         }
     }
     Line::from(spans)
+}
+
+fn parse_fleet_status(segment: &str) -> Option<FleetStatusCounts> {
+    let mut parts = segment.split_ascii_whitespace();
+    if parts.next()? != "fleet" {
+        return None;
+    }
+    let live = parse_count(parts.next()?)?;
+    let mut next = parts.next();
+    let approvals = take_optional_count(&mut parts, &mut next, '⚠')?;
+    let unread = take_optional_count(&mut parts, &mut next, '✉')?;
+    let active_runs = take_optional_count(&mut parts, &mut next, '⇄')?;
+    if next.is_some() {
+        return None;
+    }
+    let counts = FleetStatusCounts {
+        live,
+        approvals,
+        unread,
+        active_runs,
+    };
+    let mut canonical = format!("fleet {}", counts.live);
+    if let Some(approvals) = counts.approvals {
+        canonical.push_str(&format!(" ⚠{approvals}"));
+    }
+    if let Some(unread) = counts.unread {
+        canonical.push_str(&format!(" ✉{unread}"));
+    }
+    if let Some(active_runs) = counts.active_runs {
+        canonical.push_str(&format!(" ⇄{active_runs}"));
+    }
+    (segment == canonical).then_some(counts)
+}
+
+pub(crate) fn is_canonical_fleet_status(segment: &str) -> bool {
+    parse_fleet_status(segment).is_some()
+}
+
+fn take_optional_count<'a>(
+    parts: &mut std::str::SplitAsciiWhitespace<'a>,
+    next: &mut Option<&'a str>,
+    prefix: char,
+) -> Option<Option<u64>> {
+    let Some(value) = *next else {
+        return Some(None);
+    };
+    let Some(count) = value.strip_prefix(prefix) else {
+        return Some(None);
+    };
+    let count = parse_count(count)?;
+    if count == 0 {
+        return None;
+    }
+    *next = parts.next();
+    Some(Some(count))
+}
+
+fn parse_count(value: &str) -> Option<u64> {
+    (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| value.parse().ok())
+        .flatten()
 }
 
 fn truncate_title(title: &str) -> String {

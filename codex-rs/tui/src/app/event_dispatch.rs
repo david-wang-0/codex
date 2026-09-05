@@ -2863,6 +2863,12 @@ impl App {
                 self.chat_widget.set_status_line_git_summary(cwd, summary);
                 self.refresh_status_line();
             }
+            AppEvent::StatusLineFleetUpdated { thread_id, segment } => {
+                if self.chat_widget.set_status_line_fleet(thread_id, segment) {
+                    self.refresh_status_line();
+                    tui.frame_requester().schedule_frame();
+                }
+            }
             AppEvent::StatusLineWorkspaceHeadlineUpdated { request_id, result } => {
                 if self
                     .chat_widget

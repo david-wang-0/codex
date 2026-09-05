@@ -88,6 +88,7 @@ pub(crate) use approval_overlay::format_requested_permissions_rule;
 pub(crate) use claude_status_line::ClaudeLimit;
 pub(crate) use claude_status_line::ClaudeStatusLineData;
 pub(crate) use claude_status_line::claude_status_line;
+pub(crate) use claude_status_line::is_canonical_fleet_status;
 pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;

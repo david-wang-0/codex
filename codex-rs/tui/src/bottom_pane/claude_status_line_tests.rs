@@ -21,6 +21,7 @@ fn mirrors_claude_layout_and_compacts_resets() {
         context_window: Some(258_000),
         reasoning: "max".to_string(),
         context_used_tokens: Some(134_000),
+        fleet_status: Some("fleet 3 ⚠1 ✉2 ⇄1".to_string()),
         five_hour: Some(ClaudeLimit {
             label: "5h",
             used_percent: 49,
@@ -43,11 +44,11 @@ fn mirrors_claude_layout_and_compacts_resets() {
     );
     assert_eq!(
         text(&parts.right),
-        "gpt-5.6-sol [1M, max]  ctx 134/258k (51%) · 5h 49% (↻3h0m) · 7d 85% (↻2d2h; 1 reset left)"
+        "gpt-5.6-sol [1M, max]  fleet 3 ⚠1 ✉2 ⇄1 · ctx 134/258k (51%) · 5h 49% (↻3h0m) · 7d 85% (↻2d2h; 1 reset left)"
     );
     assert_eq!(
         text(&parts.compact_right),
-        "gpt-5.6-sol [1M, max]  ctx 134/258k (51%) · 5h 49% · 7d 85%"
+        "gpt-5.6-sol [1M, max]  fleet 3 ⚠1 ✉2 ⇄1 · ctx 134/258k (51%) · 5h 49% · 7d 85%"
     );
 }
 
@@ -63,6 +64,7 @@ fn applies_claude_usage_color_bands() {
             context_window: Some(100_000),
             reasoning: "high".to_string(),
             context_used_tokens: Some(84_000),
+            fleet_status: None,
             five_hour: Some(ClaudeLimit {
                 label: "5h",
                 used_percent: 49,
@@ -80,10 +82,61 @@ fn applies_claude_usage_color_bands() {
         false,
     );
 
+    assert_eq!(
+        text(&line),
+        "gpt [400k, high]  ctx 84/100k (84%) · 5h 49% · 7d 85%"
+    );
     assert_eq!(line.spans[3].style.fg, Some(Color::Yellow));
     assert_eq!(line.spans[6].style.fg, Some(Color::LightGreen));
     assert_eq!(line.spans[9].style.fg, Some(Color::Red));
     assert!(line.spans[9].style.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn fleet_status_has_canonical_order_and_semantic_styles() {
+    let line = right_line(
+        &ClaudeStatusLineData {
+            thread_title: None,
+            current_dir: "~".to_string(),
+            git_branch: None,
+            model: "gpt".to_string(),
+            max_context_window: None,
+            context_window: Some(100_000),
+            reasoning: String::new(),
+            context_used_tokens: Some(10_000),
+            fleet_status: Some("fleet 4 ⚠2 ✉3 ⇄1".to_string()),
+            five_hour: None,
+            weekly: None,
+            now_epoch_seconds: 0,
+        },
+        /*include_resets*/ false,
+    );
+
+    assert_eq!(text(&line), "gpt  fleet 4 ⚠2 ✉3 ⇄1 · ctx 10/100k (10%)");
+    assert_eq!(line.spans[2].style.fg, Some(Color::DarkGray));
+    assert_eq!(line.spans[3].style.fg, None);
+    assert_eq!(line.spans[5].style.fg, Some(Color::Red));
+    assert!(line.spans[5].style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(line.spans[7].style.fg, Some(Color::Yellow));
+    assert_eq!(line.spans[9].style.fg, Some(Color::Cyan));
+    assert_eq!(line.spans[10].style.fg, Some(Color::DarkGray));
+}
+
+#[test]
+fn malformed_fleet_status_is_omitted() {
+    for fleet_status in [
+        "fleet",
+        "fleet nope",
+        "fleet 3 ✉2 ⚠1",
+        "fleet 3 ⚠1 ⚠2",
+        "fleet 3 unknown",
+        "fleet 03",
+        "fleet 3 ⚠0",
+        "fleet 3 ✉0",
+        "fleet 3 ⇄0",
+    ] {
+        assert_eq!(parse_fleet_status(fleet_status), None, "{fleet_status}");
+    }
 }
 
 #[test]
